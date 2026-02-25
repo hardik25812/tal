@@ -209,15 +209,18 @@ backend:
 
   - task: "Campaigns CRUD operations"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/app/api/[[...path]]/route.js"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
         comment: "Implemented GET/POST/PUT/DELETE for campaigns with lead counts"
+      - working: true
+        agent: "testing"
+        comment: "✅ TESTED: All Campaigns CRUD operations working correctly. CREATE (POST), READ single (GET), UPDATE (PUT), LIST all (GET) all functioning properly. Campaign-lead assignment and leadsCount calculation working as expected."
 
   - task: "Custom fields endpoint"
     implemented: true
