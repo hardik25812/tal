@@ -1,18 +1,17 @@
 import './globals.css'
+import { Toaster } from "sonner"
 
 export const metadata = {
-  title: 'Next.js MongoDB Template',
-  description: 'A simple template with App Router, MongoDB, and shadcn/ui',
+  title: 'LeadOS - Lead Intelligence Dashboard',
+  description: 'Centralized lead database for high-volume cold email operators',
 }
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en">
-      <head>
-        <script dangerouslySetInnerHTML={{__html:'window.addEventListener("error",function(e){if(e.error instanceof DOMException&&e.error.name==="DataCloneError"&&e.message&&e.message.includes("PerformanceServerTiming")){e.stopImmediatePropagation();e.preventDefault()}},true);'}} />
-      </head>
-      <body>
+    <html lang="en" className="dark">
+      <body className="min-h-screen bg-background font-sans antialiased">
         {children}
+        <Toaster position="bottom-right" richColors />
       </body>
     </html>
   )
