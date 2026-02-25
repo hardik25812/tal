@@ -197,15 +197,18 @@ backend:
 
   - task: "Lead activity endpoint"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/app/api/[[...path]]/route.js"
     stuck_count: 0
     priority: "medium"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
         comment: "Implemented GET /api/leads/:id/activity"
+      - working: true
+        agent: "testing"
+        comment: "✅ TESTED: Lead activity endpoint working correctly. API exists and returns activities array as expected."
 
   - task: "Campaigns CRUD operations"
     implemented: true
