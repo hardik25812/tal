@@ -182,15 +182,18 @@ backend:
 
   - task: "Leads bulk actions endpoint"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/app/api/[[...path]]/route.js"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
         comment: "Implemented POST /api/leads/bulk-action for delete, addToCampaign, addTag"
+      - working: true
+        agent: "testing"
+        comment: "✅ TESTED: Bulk actions endpoint working correctly. Successfully tested addTag and delete actions. Both return proper response counts and work as expected."
 
   - task: "Lead activity endpoint"
     implemented: true
