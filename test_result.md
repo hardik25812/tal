@@ -333,5 +333,7 @@ test_plan:
 agent_communication:
   - agent: "main"
     message: "Initial implementation of LeadOS complete. All backend API endpoints and frontend pages are implemented. Please test all high priority backend endpoints first - health, dashboard stats, leads CRUD, bulk import, and campaigns CRUD."
+  - agent: "main"
+    message: "Added new features: Lists module, Tags endpoint, Export endpoints, enhanced filtering. Please test: GET /api/lists, POST /api/lists, GET /api/tags, GET /api/leads/export, GET /api/campaigns/:id/export"
   - agent: "testing"
     message: "✅ BACKEND TESTING COMPLETE: All 8 backend API endpoints tested successfully. All high priority endpoints (health, dashboard stats, leads CRUD, bulk import, campaigns CRUD) are working correctly. All APIs return proper response formats, handle CRUD operations, and manage data relationships (campaign-lead assignments, duplicate detection, etc.) as expected. Backend is ready for production use."
