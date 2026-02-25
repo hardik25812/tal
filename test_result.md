@@ -167,15 +167,18 @@ backend:
 
   - task: "Leads bulk import endpoint"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/app/api/[[...path]]/route.js"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
         comment: "Implemented POST /api/leads/bulk with duplicate detection"
+      - working: true
+        agent: "testing"
+        comment: "✅ TESTED: Bulk import endpoint working correctly with duplicate detection. Successfully imported 2 new leads and skipped 1 duplicate. Returns proper counts: imported, skipped, total."
 
   - task: "Leads bulk actions endpoint"
     implemented: true
