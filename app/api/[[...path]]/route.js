@@ -115,20 +115,51 @@ export async function GET(request, { params }) {
       const sortBy = searchParams.get('sortBy') || 'createdAt';
       const sortOrder = searchParams.get('sortOrder') === 'asc' ? 1 : -1;
       const campaignId = searchParams.get('campaignId');
+      const listId = searchParams.get('listId');
+      const tag = searchParams.get('tag');
+      const dateFrom = searchParams.get('dateFrom');
+      const dateTo = searchParams.get('dateTo');
 
       let query = {};
       if (search) {
-        query = {
-          $or: [
-            { email: { $regex: search, $options: 'i' } },
-            { firstName: { $regex: search, $options: 'i' } },
-            { lastName: { $regex: search, $options: 'i' } },
-            { company: { $regex: search, $options: 'i' } }
-          ]
-        };
+        query.$or = [
+          { email: { $regex: search, $options: 'i' } },
+          { firstName: { $regex: search, $options: 'i' } },
+          { lastName: { $regex: search, $options: 'i' } },
+          { company: { $regex: search, $options: 'i' } }
+        ];
       }
       if (campaignId) {
         query.campaigns = campaignId;
+      }
+      if (tag) {
+        query.tags = tag;
+      }
+      if (dateFrom || dateTo) {
+        query.createdAt = {};
+        if (dateFrom) query.createdAt.$gte = dateFrom;
+        if (dateTo) query.createdAt.$lte = dateTo;
+      }
+      
+      // If listId provided, get list filters and apply them
+      if (listId) {
+        const list = await db.collection('lists').findOne({ id: listId });
+        if (list && list.filters) {
+          if (list.filters.dateFrom) {
+            query.createdAt = query.createdAt || {};
+            query.createdAt.$gte = list.filters.dateFrom;
+          }
+          if (list.filters.dateTo) {
+            query.createdAt = query.createdAt || {};
+            query.createdAt.$lte = list.filters.dateTo;
+          }
+          if (list.filters.tags && list.filters.tags.length > 0) {
+            query.tags = { $in: list.filters.tags };
+          }
+          if (list.filters.campaigns && list.filters.campaigns.length > 0) {
+            query.campaigns = { $in: list.filters.campaigns };
+          }
+        }
       }
 
       const total = await db.collection('leads').countDocuments(query);
@@ -148,6 +179,63 @@ export async function GET(request, { params }) {
           totalPages: Math.ceil(total / limit)
         }
       }, { headers: corsHeaders() });
+    }
+
+    // Export leads to CSV
+    if (pathStr === 'leads/export') {
+      const search = searchParams.get('search') || '';
+      const campaignId = searchParams.get('campaignId');
+      const tag = searchParams.get('tag');
+      const dateFrom = searchParams.get('dateFrom');
+      const dateTo = searchParams.get('dateTo');
+      const leadIds = searchParams.get('leadIds'); // comma-separated
+
+      let query = {};
+      
+      if (leadIds) {
+        query.id = { $in: leadIds.split(',') };
+      } else {
+        if (search) {
+          query.$or = [
+            { email: { $regex: search, $options: 'i' } },
+            { firstName: { $regex: search, $options: 'i' } },
+            { lastName: { $regex: search, $options: 'i' } },
+            { company: { $regex: search, $options: 'i' } }
+          ];
+        }
+        if (campaignId) {
+          query.campaigns = campaignId;
+        }
+        if (tag) {
+          query.tags = tag;
+        }
+        if (dateFrom || dateTo) {
+          query.createdAt = {};
+          if (dateFrom) query.createdAt.$gte = dateFrom;
+          if (dateTo) query.createdAt.$lte = dateTo;
+        }
+      }
+
+      const leads = await db.collection('leads').find(query).toArray();
+      const csv = leadsToCSV(leads);
+
+      return new NextResponse(csv, {
+        headers: {
+          ...corsHeaders(),
+          'Content-Type': 'text/csv',
+          'Content-Disposition': `attachment; filename="leads-export-${new Date().toISOString().split('T')[0]}.csv"`
+        }
+      });
+    }
+
+    // Get all unique tags
+    if (pathStr === 'tags') {
+      const leads = await db.collection('leads').find({}).project({ tags: 1 }).toArray();
+      const allTags = new Set();
+      leads.forEach(lead => {
+        (lead.tags || []).forEach(tag => allTags.add(tag));
+      });
+      return NextResponse.json(Array.from(allTags).sort(), { headers: corsHeaders() });
     }
 
     // Get single lead
