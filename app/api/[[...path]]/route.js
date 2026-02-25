@@ -479,7 +479,48 @@ export async function POST(request, { params }) {
         return NextResponse.json({ updated: leadIds.length }, { headers: corsHeaders() });
       }
 
+      if (action === 'removeTag') {
+        await db.collection('leads').updateMany(
+          { id: { $in: leadIds } },
+          { $pull: { tags: data.tag } }
+        );
+        return NextResponse.json({ updated: leadIds.length }, { headers: corsHeaders() });
+      }
+
+      if (action === 'removeFromCampaign') {
+        await db.collection('leads').updateMany(
+          { id: { $in: leadIds } },
+          { $pull: { campaigns: data.campaignId } }
+        );
+        return NextResponse.json({ updated: leadIds.length }, { headers: corsHeaders() });
+      }
+
       return NextResponse.json({ error: 'Unknown action' }, { status: 400, headers: corsHeaders() });
+    }
+
+    // Create list
+    if (pathStr === 'lists') {
+      const list = {
+        id: uuidv4(),
+        name: body.name,
+        description: body.description || '',
+        filters: body.filters || {},
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      await db.collection('lists').insertOne(list);
+
+      await db.collection('activities').insertOne({
+        id: uuidv4(),
+        action: 'List Created',
+        listId: list.id,
+        listName: list.name,
+        user: 'System',
+        createdAt: new Date().toISOString()
+      });
+
+      return NextResponse.json(list, { status: 201, headers: corsHeaders() });
     }
 
     // Create campaign
