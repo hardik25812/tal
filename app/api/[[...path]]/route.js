@@ -701,6 +701,18 @@ export async function DELETE(request, { params }) {
       return NextResponse.json({ deleted: true }, { headers: corsHeaders() });
     }
 
+    // Delete list
+    if (pathStr.startsWith('lists/') && pathStr.split('/').length === 2) {
+      const listId = pathStr.split('/')[1];
+      const result = await db.collection('lists').deleteOne({ id: listId });
+      
+      if (result.deletedCount === 0) {
+        return NextResponse.json({ error: 'List not found' }, { status: 404, headers: corsHeaders() });
+      }
+
+      return NextResponse.json({ deleted: true }, { headers: corsHeaders() });
+    }
+
     return NextResponse.json({ error: 'Not found' }, { status: 404, headers: corsHeaders() });
   } catch (error) {
     console.error('DELETE Error:', error);
