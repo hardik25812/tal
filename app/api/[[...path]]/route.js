@@ -626,6 +626,26 @@ export async function PUT(request, { params }) {
       return NextResponse.json(result, { headers: corsHeaders() });
     }
 
+    // Update list
+    if (pathStr.startsWith('lists/') && pathStr.split('/').length === 2) {
+      const listId = pathStr.split('/')[1];
+      const updateData = { ...body, updatedAt: new Date().toISOString() };
+      delete updateData.id;
+      delete updateData._id;
+
+      const result = await db.collection('lists').findOneAndUpdate(
+        { id: listId },
+        { $set: updateData },
+        { returnDocument: 'after' }
+      );
+
+      if (!result) {
+        return NextResponse.json({ error: 'List not found' }, { status: 404, headers: corsHeaders() });
+      }
+
+      return NextResponse.json(result, { headers: corsHeaders() });
+    }
+
     return NextResponse.json({ error: 'Not found' }, { status: 404, headers: corsHeaders() });
   } catch (error) {
     console.error('PUT Error:', error);
