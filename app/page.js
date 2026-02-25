@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { toast } from 'sonner'
 import {
@@ -31,12 +31,12 @@ import {
   FileSpreadsheet,
   Command,
   Eye,
-  EyeOff,
-  GripVertical,
   Download,
   Loader2,
   CheckCircle2,
-  AlertCircle
+  List,
+  CalendarRange,
+  Tags
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -49,26 +49,24 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import Papa from 'papaparse'
 
-// API Base
 const API_BASE = '/api'
 
-// Sidebar Navigation Items
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'leads', label: 'Leads', icon: Users },
+  { id: 'lists', label: 'Lists', icon: List },
   { id: 'campaigns', label: 'Campaigns', icon: Target },
   { id: 'import', label: 'Import Center', icon: Upload },
   { id: 'team', label: 'Team', icon: UsersRound },
   { id: 'settings', label: 'Settings', icon: Settings },
 ]
 
-// Default columns for leads table
 const defaultColumns = [
   { id: 'email', label: 'Email', visible: true },
   { id: 'firstName', label: 'First Name', visible: true },
@@ -88,6 +86,8 @@ export default function App() {
   const [activities, setActivities] = useState([])
   const [leads, setLeads] = useState([])
   const [campaigns, setCampaigns] = useState([])
+  const [lists, setLists] = useState([])
+  const [allTags, setAllTags] = useState([])
   const [pagination, setPagination] = useState({ total: 0, page: 1, limit: 20, totalPages: 0 })
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedLeads, setSelectedLeads] = useState([])
@@ -97,15 +97,17 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [selectedLead, setSelectedLead] = useState(null)
   const [selectedCampaign, setSelectedCampaign] = useState(null)
+  const [selectedList, setSelectedList] = useState(null)
+  const [activeFilters, setActiveFilters] = useState({ tag: '', dateFrom: '', dateTo: '', listId: '' })
   
-  // Modal states
   const [newLeadOpen, setNewLeadOpen] = useState(false)
   const [newCampaignOpen, setNewCampaignOpen] = useState(false)
+  const [newListOpen, setNewListOpen] = useState(false)
   const [bulkCampaignOpen, setBulkCampaignOpen] = useState(false)
   const [bulkTagOpen, setBulkTagOpen] = useState(false)
   const [addToCampaignOpen, setAddToCampaignOpen] = useState(false)
+  const [filterPanelOpen, setFilterPanelOpen] = useState(false)
 
-  // Keyboard shortcut for command palette
   useEffect(() => {
     const down = (e) => {
       if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
@@ -117,7 +119,6 @@ export default function App() {
     return () => document.removeEventListener('keydown', down)
   }, [])
 
-  // Fetch dashboard data
   const fetchDashboardData = useCallback(async () => {
     try {
       const [statsRes, activityRes] = await Promise.all([
@@ -133,7 +134,6 @@ export default function App() {
     }
   }, [])
 
-  // Fetch leads
   const fetchLeads = useCallback(async (page = 1) => {
     setLoading(true)
     try {
@@ -142,7 +142,11 @@ export default function App() {
         limit: pagination.limit.toString(),
         sortBy,
         sortOrder,
-        ...(searchQuery && { search: searchQuery })
+        ...(searchQuery && { search: searchQuery }),
+        ...(activeFilters.tag && { tag: activeFilters.tag }),
+        ...(activeFilters.dateFrom && { dateFrom: activeFilters.dateFrom }),
+        ...(activeFilters.dateTo && { dateTo: activeFilters.dateTo }),
+        ...(activeFilters.listId && { listId: activeFilters.listId })
       })
       const res = await fetch(`${API_BASE}/leads?${params}`)
       const data = await res.json()
@@ -154,9 +158,8 @@ export default function App() {
     } finally {
       setLoading(false)
     }
-  }, [searchQuery, sortBy, sortOrder, pagination.limit])
+  }, [searchQuery, sortBy, sortOrder, pagination.limit, activeFilters])
 
-  // Fetch campaigns
   const fetchCampaigns = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/campaigns`)
@@ -167,20 +170,39 @@ export default function App() {
     }
   }, [])
 
-  // Initial data fetch
+  const fetchLists = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/lists`)
+      const data = await res.json()
+      setLists(data)
+    } catch (error) {
+      console.error('Failed to fetch lists:', error)
+    }
+  }, [])
+
+  const fetchTags = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/tags`)
+      const data = await res.json()
+      setAllTags(data)
+    } catch (error) {
+      console.error('Failed to fetch tags:', error)
+    }
+  }, [])
+
   useEffect(() => {
     fetchDashboardData()
     fetchCampaigns()
+    fetchLists()
+    fetchTags()
   }, [])
 
-  // Fetch leads when page changes
   useEffect(() => {
     if (currentPage === 'leads') {
       fetchLeads(pagination.page)
     }
-  }, [currentPage, fetchLeads])
+  }, [currentPage])
 
-  // Search debounce
   useEffect(() => {
     const timer = setTimeout(() => {
       if (currentPage === 'leads') {
@@ -188,9 +210,31 @@ export default function App() {
       }
     }, 300)
     return () => clearTimeout(timer)
-  }, [searchQuery])
+  }, [searchQuery, activeFilters])
 
-  // Handle bulk actions
+  const handleExportLeads = async (leadIds = null) => {
+    try {
+      const params = new URLSearchParams({
+        ...(leadIds && { leadIds: leadIds.join(',') }),
+        ...(searchQuery && { search: searchQuery }),
+        ...(activeFilters.tag && { tag: activeFilters.tag }),
+        ...(activeFilters.dateFrom && { dateFrom: activeFilters.dateFrom }),
+        ...(activeFilters.dateTo && { dateTo: activeFilters.dateTo })
+      })
+      
+      const url = `${API_BASE}/leads/export?${params}`
+      window.open(url, '_blank')
+      toast.success('Export started')
+    } catch (error) {
+      toast.error('Export failed')
+    }
+  }
+
+  const handleExportCampaign = async (campaignId) => {
+    window.open(`${API_BASE}/campaigns/${campaignId}/export`, '_blank')
+    toast.success('Export started')
+  }
+
   const handleBulkDelete = async () => {
     if (selectedLeads.length === 0) return
     try {
@@ -237,10 +281,18 @@ export default function App() {
       setSelectedLeads([])
       setBulkTagOpen(false)
       fetchLeads(pagination.page)
+      fetchTags()
     } catch (error) {
       toast.error('Failed to add tag')
     }
   }
+
+  const clearFilters = () => {
+    setActiveFilters({ tag: '', dateFrom: '', dateTo: '', listId: '' })
+    setSearchQuery('')
+  }
+
+  const hasActiveFilters = activeFilters.tag || activeFilters.dateFrom || activeFilters.dateTo || activeFilters.listId
 
   return (
     <div className="flex h-screen bg-background">
@@ -250,7 +302,6 @@ export default function App() {
         animate={{ width: sidebarCollapsed ? 64 : 240 }}
         className="flex flex-col border-r border-border bg-sidebar h-full"
       >
-        {/* Logo */}
         <div className="flex items-center h-14 px-4 border-b border-border">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-xl bg-primary flex items-center justify-center">
@@ -271,7 +322,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Navigation */}
         <nav className="flex-1 py-4 px-2">
           {navItems.map((item) => (
             <button
@@ -280,6 +330,7 @@ export default function App() {
                 setCurrentPage(item.id)
                 setSelectedLead(null)
                 setSelectedCampaign(null)
+                setSelectedList(null)
               }}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl mb-1 transition-all ${
                 currentPage === item.id
@@ -304,7 +355,6 @@ export default function App() {
           ))}
         </nav>
 
-        {/* Collapse button */}
         <div className="p-2 border-t border-border">
           <button
             onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
@@ -349,6 +399,10 @@ export default function App() {
                 <DropdownMenuItem onClick={() => setNewCampaignOpen(true)}>
                   <Target className="w-4 h-4 mr-2" />
                   New Campaign
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setNewListOpen(true)}>
+                  <List className="w-4 h-4 mr-2" />
+                  New List
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -405,6 +459,13 @@ export default function App() {
               setNewLeadOpen={setNewLeadOpen}
               setCurrentPage={setCurrentPage}
               campaigns={campaigns}
+              lists={lists}
+              allTags={allTags}
+              activeFilters={activeFilters}
+              setActiveFilters={setActiveFilters}
+              hasActiveFilters={hasActiveFilters}
+              clearFilters={clearFilters}
+              onExport={handleExportLeads}
             />
           )}
           {currentPage === 'leads' && selectedLead && (
@@ -414,8 +475,32 @@ export default function App() {
               onUpdate={(updated) => {
                 setSelectedLead(updated)
                 fetchLeads(pagination.page)
+                fetchTags()
               }}
               campaigns={campaigns}
+              allTags={allTags}
+            />
+          )}
+          {currentPage === 'lists' && !selectedList && (
+            <ListsPage
+              lists={lists}
+              fetchLists={fetchLists}
+              onListClick={setSelectedList}
+              setNewListOpen={setNewListOpen}
+              campaigns={campaigns}
+              allTags={allTags}
+            />
+          )}
+          {currentPage === 'lists' && selectedList && (
+            <ListDetailPage
+              list={selectedList}
+              onBack={() => {
+                setSelectedList(null)
+                fetchLists()
+              }}
+              campaigns={campaigns}
+              allTags={allTags}
+              onExport={handleExportLeads}
             />
           )}
           {currentPage === 'campaigns' && !selectedCampaign && (
@@ -434,6 +519,7 @@ export default function App() {
                 fetchCampaigns()
               }}
               onAddLeads={() => setAddToCampaignOpen(true)}
+              onExport={() => handleExportCampaign(selectedCampaign.id)}
             />
           )}
           {currentPage === 'import' && (
@@ -441,6 +527,7 @@ export default function App() {
               onImportComplete={() => {
                 fetchLeads(1)
                 fetchDashboardData()
+                fetchTags()
               }}
             />
           )}
@@ -463,6 +550,10 @@ export default function App() {
               <Plus className="mr-2 h-4 w-4" />
               Create New Campaign
             </CommandItem>
+            <CommandItem onSelect={() => { setNewListOpen(true); setCommandOpen(false) }}>
+              <Plus className="mr-2 h-4 w-4" />
+              Create New List
+            </CommandItem>
           </CommandGroup>
           <CommandSeparator />
           <CommandGroup heading="Navigation">
@@ -473,6 +564,7 @@ export default function App() {
                   setCurrentPage(item.id)
                   setSelectedLead(null)
                   setSelectedCampaign(null)
+                  setSelectedList(null)
                   setCommandOpen(false)
                 }}
               >
@@ -484,31 +576,16 @@ export default function App() {
         </CommandList>
       </CommandDialog>
 
-      {/* New Lead Dialog */}
-      <NewLeadDialog
-        open={newLeadOpen}
-        onOpenChange={setNewLeadOpen}
-        onSuccess={() => {
-          fetchLeads(pagination.page)
-          fetchDashboardData()
-        }}
-      />
+      {/* Dialogs */}
+      <NewLeadDialog open={newLeadOpen} onOpenChange={setNewLeadOpen} onSuccess={() => { fetchLeads(pagination.page); fetchDashboardData() }} />
+      <NewCampaignDialog open={newCampaignOpen} onOpenChange={setNewCampaignOpen} onSuccess={fetchCampaigns} />
+      <NewListDialog open={newListOpen} onOpenChange={setNewListOpen} onSuccess={fetchLists} campaigns={campaigns} allTags={allTags} />
 
-      {/* New Campaign Dialog */}
-      <NewCampaignDialog
-        open={newCampaignOpen}
-        onOpenChange={setNewCampaignOpen}
-        onSuccess={fetchCampaigns}
-      />
-
-      {/* Bulk Add to Campaign Dialog */}
       <Dialog open={bulkCampaignOpen} onOpenChange={setBulkCampaignOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Add to Campaign</DialogTitle>
-            <DialogDescription>
-              Select a campaign to add {selectedLeads.length} leads to.
-            </DialogDescription>
+            <DialogDescription>Select a campaign to add {selectedLeads.length} leads to.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             {campaigns.map((campaign) => (
@@ -525,15 +602,8 @@ export default function App() {
         </DialogContent>
       </Dialog>
 
-      {/* Bulk Add Tag Dialog */}
-      <BulkTagDialog
-        open={bulkTagOpen}
-        onOpenChange={setBulkTagOpen}
-        onSubmit={handleBulkAddTag}
-        count={selectedLeads.length}
-      />
+      <BulkTagDialog open={bulkTagOpen} onOpenChange={setBulkTagOpen} onSubmit={handleBulkAddTag} count={selectedLeads.length} allTags={allTags} />
 
-      {/* Add Leads to Campaign Dialog */}
       <AddLeadsToCampaignDialog
         open={addToCampaignOpen}
         onOpenChange={setAddToCampaignOpen}
@@ -547,7 +617,7 @@ export default function App() {
   )
 }
 
-// Dashboard Page Component
+// Dashboard Page
 function DashboardPage({ stats, activities }) {
   return (
     <div className="space-y-6">
@@ -556,15 +626,13 @@ function DashboardPage({ stats, activities }) {
         <p className="text-muted-foreground">Welcome back! Here's your lead intelligence overview.</p>
       </div>
 
-      {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatsCard title="Total Leads" value={stats.totalLeads} icon={Users} />
         <StatsCard title="Total Campaigns" value={stats.totalCampaigns} icon={Target} />
-        <StatsCard title="Leads Today" value={stats.leadsToday} icon={TrendingUp} trend="up" />
+        <StatsCard title="Leads Today" value={stats.leadsToday} icon={TrendingUp} />
         <StatsCard title="Active Campaigns" value={stats.activeCampaigns} icon={Activity} />
       </div>
 
-      {/* Recent Activity */}
       <Card className="rounded-2xl">
         <CardHeader>
           <CardTitle>Recent Activity</CardTitle>
@@ -586,7 +654,7 @@ function DashboardPage({ stats, activities }) {
                     <div>
                       <div className="font-medium text-sm">{activity.action}</div>
                       <div className="text-xs text-muted-foreground">
-                        {activity.leadEmail || activity.campaignName || activity.details}
+                        {activity.leadEmail || activity.campaignName || activity.listName || activity.details}
                       </div>
                     </div>
                   </div>
@@ -603,8 +671,7 @@ function DashboardPage({ stats, activities }) {
   )
 }
 
-// Stats Card Component
-function StatsCard({ title, value, icon: Icon, trend }) {
+function StatsCard({ title, value, icon: Icon }) {
   return (
     <Card className="rounded-2xl">
       <CardContent className="p-6">
@@ -622,29 +689,13 @@ function StatsCard({ title, value, icon: Icon, trend }) {
   )
 }
 
-// Leads Page Component
+// Leads Page
 function LeadsPage({
-  leads,
-  pagination,
-  searchQuery,
-  setSearchQuery,
-  selectedLeads,
-  setSelectedLeads,
-  columns,
-  setColumns,
-  sortBy,
-  setSortBy,
-  sortOrder,
-  setSortOrder,
-  loading,
-  fetchLeads,
-  onLeadClick,
-  onBulkDelete,
-  setBulkCampaignOpen,
-  setBulkTagOpen,
-  setNewLeadOpen,
-  setCurrentPage,
-  campaigns
+  leads, pagination, searchQuery, setSearchQuery, selectedLeads, setSelectedLeads,
+  columns, setColumns, sortBy, setSortBy, sortOrder, setSortOrder, loading,
+  fetchLeads, onLeadClick, onBulkDelete, setBulkCampaignOpen, setBulkTagOpen,
+  setNewLeadOpen, setCurrentPage, campaigns, lists, allTags, activeFilters,
+  setActiveFilters, hasActiveFilters, clearFilters, onExport
 }) {
   const toggleSelectAll = () => {
     if (selectedLeads.length === leads.length) {
@@ -655,17 +706,11 @@ function LeadsPage({
   }
 
   const toggleSelect = (id) => {
-    setSelectedLeads(prev =>
-      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
-    )
+    setSelectedLeads(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id])
   }
 
   const toggleColumn = (columnId) => {
-    setColumns(prev =>
-      prev.map(col =>
-        col.id === columnId ? { ...col, visible: !col.visible } : col
-      )
-    )
+    setColumns(prev => prev.map(col => col.id === columnId ? { ...col, visible: !col.visible } : col))
   }
 
   const visibleColumns = columns.filter(col => col.visible)
@@ -678,6 +723,10 @@ function LeadsPage({
           <p className="text-muted-foreground">{pagination.total.toLocaleString()} total leads</p>
         </div>
         <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => onExport(selectedLeads.length > 0 ? selectedLeads : null)}>
+            <Download className="w-4 h-4 mr-2" />
+            Export {selectedLeads.length > 0 ? `(${selectedLeads.length})` : 'All'}
+          </Button>
           <Button onClick={() => setNewLeadOpen(true)}>
             <Plus className="w-4 h-4 mr-2" />
             Add Lead
@@ -689,7 +738,7 @@ function LeadsPage({
         </div>
       </div>
 
-      {/* Controls */}
+      {/* Filters & Controls */}
       <div className="flex items-center gap-2 flex-wrap">
         <div className="relative flex-1 min-w-[200px] max-w-sm">
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -700,6 +749,56 @@ function LeadsPage({
             className="pl-9"
           />
         </div>
+
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button variant="outline" size="sm" className={hasActiveFilters ? 'border-primary' : ''}>
+              <Filter className="w-4 h-4 mr-2" />
+              Filters
+              {hasActiveFilters && <Badge className="ml-2" variant="secondary">Active</Badge>}
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-80" align="start">
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>Filter by Tag</Label>
+                <Select value={activeFilters.tag} onValueChange={(v) => setActiveFilters({ ...activeFilters, tag: v })}>
+                  <SelectTrigger><SelectValue placeholder="Select tag..." /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">All Tags</SelectItem>
+                    {allTags.map(tag => <SelectItem key={tag} value={tag}>{tag}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Filter by List</Label>
+                <Select value={activeFilters.listId} onValueChange={(v) => setActiveFilters({ ...activeFilters, listId: v })}>
+                  <SelectTrigger><SelectValue placeholder="Select list..." /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">All Leads</SelectItem>
+                    {lists.map(list => <SelectItem key={list.id} value={list.id}>{list.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-2">
+                  <Label>From Date</Label>
+                  <Input type="date" value={activeFilters.dateFrom} onChange={(e) => setActiveFilters({ ...activeFilters, dateFrom: e.target.value })} />
+                </div>
+                <div className="space-y-2">
+                  <Label>To Date</Label>
+                  <Input type="date" value={activeFilters.dateTo} onChange={(e) => setActiveFilters({ ...activeFilters, dateTo: e.target.value })} />
+                </div>
+              </div>
+              {hasActiveFilters && (
+                <Button variant="ghost" size="sm" onClick={clearFilters} className="w-full">
+                  <X className="w-4 h-4 mr-2" />
+                  Clear Filters
+                </Button>
+              )}
+            </div>
+          </PopoverContent>
+        </Popover>
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -724,11 +823,7 @@ function LeadsPage({
                 }}
               >
                 {col.label}
-                {sortBy === col.id && (
-                  <span className="ml-2 text-xs text-muted-foreground">
-                    ({sortOrder})
-                  </span>
-                )}
+                {sortBy === col.id && <span className="ml-2 text-xs text-muted-foreground">({sortOrder})</span>}
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
@@ -745,11 +840,7 @@ function LeadsPage({
             <DropdownMenuLabel>Toggle Columns</DropdownMenuLabel>
             <DropdownMenuSeparator />
             {columns.map(col => (
-              <DropdownMenuCheckboxItem
-                key={col.id}
-                checked={col.visible}
-                onCheckedChange={() => toggleColumn(col.id)}
-              >
+              <DropdownMenuCheckboxItem key={col.id} checked={col.visible} onCheckedChange={() => toggleColumn(col.id)}>
                 {col.label}
               </DropdownMenuCheckboxItem>
             ))}
@@ -776,6 +867,10 @@ function LeadsPage({
               <Tag className="w-4 h-4 mr-2" />
               Add Tag
             </Button>
+            <Button variant="outline" size="sm" onClick={() => onExport(selectedLeads)}>
+              <Download className="w-4 h-4 mr-2" />
+              Export
+            </Button>
             <Button variant="destructive" size="sm" onClick={onBulkDelete}>
               <Trash2 className="w-4 h-4 mr-2" />
               Delete
@@ -794,15 +889,10 @@ function LeadsPage({
             <thead className="bg-muted/50">
               <tr>
                 <th className="p-4 text-left">
-                  <Checkbox
-                    checked={leads.length > 0 && selectedLeads.length === leads.length}
-                    onCheckedChange={toggleSelectAll}
-                  />
+                  <Checkbox checked={leads.length > 0 && selectedLeads.length === leads.length} onCheckedChange={toggleSelectAll} />
                 </th>
                 {visibleColumns.map(col => (
-                  <th key={col.id} className="p-4 text-left text-sm font-medium text-muted-foreground">
-                    {col.label}
-                  </th>
+                  <th key={col.id} className="p-4 text-left text-sm font-medium text-muted-foreground">{col.label}</th>
                 ))}
                 <th className="p-4 text-right" />
               </tr>
@@ -822,40 +912,23 @@ function LeadsPage({
                 </tr>
               ) : (
                 leads.map(lead => (
-                  <tr
-                    key={lead.id}
-                    className="border-t border-border hover:bg-muted/30 cursor-pointer transition-colors"
-                    onClick={() => onLeadClick(lead)}
-                  >
+                  <tr key={lead.id} className="border-t border-border hover:bg-muted/30 cursor-pointer transition-colors" onClick={() => onLeadClick(lead)}>
                     <td className="p-4" onClick={(e) => e.stopPropagation()}>
-                      <Checkbox
-                        checked={selectedLeads.includes(lead.id)}
-                        onCheckedChange={() => toggleSelect(lead.id)}
-                      />
+                      <Checkbox checked={selectedLeads.includes(lead.id)} onCheckedChange={() => toggleSelect(lead.id)} />
                     </td>
                     {visibleColumns.map(col => (
                       <td key={col.id} className="p-4">
                         {col.id === 'tags' ? (
                           <div className="flex gap-1 flex-wrap">
                             {(lead.tags || []).slice(0, 3).map((tag, i) => (
-                              <Badge key={i} variant="secondary" className="text-xs">
-                                {tag}
-                              </Badge>
+                              <Badge key={i} variant="secondary" className="text-xs">{tag}</Badge>
                             ))}
-                            {(lead.tags || []).length > 3 && (
-                              <Badge variant="outline" className="text-xs">
-                                +{lead.tags.length - 3}
-                              </Badge>
-                            )}
+                            {(lead.tags || []).length > 3 && <Badge variant="outline" className="text-xs">+{lead.tags.length - 3}</Badge>}
                           </div>
                         ) : col.id === 'campaigns' ? (
-                          <Badge variant="outline">
-                            {(lead.campaigns || []).length} campaigns
-                          </Badge>
+                          <Badge variant="outline">{(lead.campaigns || []).length} campaigns</Badge>
                         ) : col.id === 'createdAt' ? (
-                          <span className="text-sm text-muted-foreground">
-                            {new Date(lead.createdAt).toLocaleDateString()}
-                          </span>
+                          <span className="text-sm text-muted-foreground">{new Date(lead.createdAt).toLocaleDateString()}</span>
                         ) : (
                           <span className="text-sm">{lead[col.id] || '-'}</span>
                         )}
@@ -864,23 +937,16 @@ function LeadsPage({
                     <td className="p-4 text-right" onClick={(e) => e.stopPropagation()}>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon">
-                            <MoreHorizontal className="w-4 h-4" />
-                          </Button>
+                          <Button variant="ghost" size="icon"><MoreHorizontal className="w-4 h-4" /></Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => onLeadClick(lead)}>
-                            View Details
-                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => onLeadClick(lead)}>View Details</DropdownMenuItem>
                           <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            className="text-destructive"
-                            onClick={async () => {
-                              await fetch(`${API_BASE}/leads/${lead.id}`, { method: 'DELETE' })
-                              toast.success('Lead deleted')
-                              fetchLeads(pagination.page)
-                            }}
-                          >
+                          <DropdownMenuItem className="text-destructive" onClick={async () => {
+                            await fetch(`${API_BASE}/leads/${lead.id}`, { method: 'DELETE' })
+                            toast.success('Lead deleted')
+                            fetchLeads(pagination.page)
+                          }}>
                             Delete
                           </DropdownMenuItem>
                         </DropdownMenuContent>
@@ -893,29 +959,14 @@ function LeadsPage({
           </table>
         </div>
 
-        {/* Pagination */}
         {pagination.totalPages > 1 && (
           <div className="flex items-center justify-between p-4 border-t border-border">
             <div className="text-sm text-muted-foreground">
               Showing {(pagination.page - 1) * pagination.limit + 1} - {Math.min(pagination.page * pagination.limit, pagination.total)} of {pagination.total}
             </div>
             <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={pagination.page === 1}
-                onClick={() => fetchLeads(pagination.page - 1)}
-              >
-                Previous
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={pagination.page === pagination.totalPages}
-                onClick={() => fetchLeads(pagination.page + 1)}
-              >
-                Next
-              </Button>
+              <Button variant="outline" size="sm" disabled={pagination.page === 1} onClick={() => fetchLeads(pagination.page - 1)}>Previous</Button>
+              <Button variant="outline" size="sm" disabled={pagination.page === pagination.totalPages} onClick={() => fetchLeads(pagination.page + 1)}>Next</Button>
             </div>
           </div>
         )}
@@ -924,14 +975,16 @@ function LeadsPage({
   )
 }
 
-// Lead Detail Page Component
-function LeadDetailPage({ lead, onBack, onUpdate, campaigns }) {
+// Lead Detail Page
+function LeadDetailPage({ lead, onBack, onUpdate, campaigns, allTags }) {
   const [activeTab, setActiveTab] = useState('overview')
   const [editing, setEditing] = useState(false)
   const [formData, setFormData] = useState(lead)
   const [activities, setActivities] = useState([])
+  const [newTag, setNewTag] = useState('')
   const [newCustomField, setNewCustomField] = useState({ name: '', value: '' })
   const [customFieldOpen, setCustomFieldOpen] = useState(false)
+  const [addCampaignOpen, setAddCampaignOpen] = useState(false)
 
   useEffect(() => {
     fetchActivities()
@@ -963,11 +1016,80 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns }) {
     }
   }
 
+  const handleAddTag = async () => {
+    if (!newTag) return
+    const updatedTags = [...(formData.tags || []), newTag]
+    try {
+      const res = await fetch(`${API_BASE}/leads/${lead.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tags: updatedTags })
+      })
+      const updated = await res.json()
+      onUpdate(updated)
+      setFormData(updated)
+      setNewTag('')
+      toast.success('Tag added')
+    } catch (error) {
+      toast.error('Failed to add tag')
+    }
+  }
+
+  const handleRemoveTag = async (tagToRemove) => {
+    const updatedTags = (formData.tags || []).filter(t => t !== tagToRemove)
+    try {
+      const res = await fetch(`${API_BASE}/leads/${lead.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tags: updatedTags })
+      })
+      const updated = await res.json()
+      onUpdate(updated)
+      setFormData(updated)
+      toast.success('Tag removed')
+    } catch (error) {
+      toast.error('Failed to remove tag')
+    }
+  }
+
+  const handleAddToCampaign = async (campaignId) => {
+    const updatedCampaigns = [...(formData.campaigns || []), campaignId]
+    try {
+      const res = await fetch(`${API_BASE}/leads/${lead.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaigns: updatedCampaigns })
+      })
+      const updated = await res.json()
+      onUpdate(updated)
+      setFormData(updated)
+      setAddCampaignOpen(false)
+      toast.success('Added to campaign')
+    } catch (error) {
+      toast.error('Failed to add to campaign')
+    }
+  }
+
+  const handleRemoveFromCampaign = async (campaignId) => {
+    const updatedCampaigns = (formData.campaigns || []).filter(c => c !== campaignId)
+    try {
+      const res = await fetch(`${API_BASE}/leads/${lead.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaigns: updatedCampaigns })
+      })
+      const updated = await res.json()
+      onUpdate(updated)
+      setFormData(updated)
+      toast.success('Removed from campaign')
+    } catch (error) {
+      toast.error('Failed to remove from campaign')
+    }
+  }
+
   const handleAddCustomField = async () => {
     if (!newCustomField.name || !newCustomField.value) return
     const updatedFields = { ...formData.customFields, [newCustomField.name]: newCustomField.value }
-    setFormData({ ...formData, customFields: updatedFields })
-    
     try {
       const res = await fetch(`${API_BASE}/leads/${lead.id}`, {
         method: 'PUT',
@@ -976,6 +1098,7 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns }) {
       })
       const updated = await res.json()
       onUpdate(updated)
+      setFormData(updated)
       setNewCustomField({ name: '', value: '' })
       setCustomFieldOpen(false)
       toast.success('Custom field added')
@@ -984,7 +1107,8 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns }) {
     }
   }
 
-  const leadCampaigns = campaigns.filter(c => (lead.campaigns || []).includes(c.id))
+  const leadCampaigns = campaigns.filter(c => (formData.campaigns || []).includes(c.id))
+  const availableCampaigns = campaigns.filter(c => !(formData.campaigns || []).includes(c.id))
 
   return (
     <div className="space-y-6">
@@ -993,7 +1117,6 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns }) {
         Back to Leads
       </Button>
 
-      {/* Header */}
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-semibold flex items-center gap-2">
@@ -1002,23 +1125,47 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns }) {
           </h1>
           <div className="flex items-center gap-4 mt-2 text-muted-foreground">
             {lead.firstName && <span>{lead.firstName} {lead.lastName}</span>}
-            {lead.company && (
-              <span className="flex items-center gap-1">
-                <Building2 className="w-4 h-4" />
-                {lead.company}
-              </span>
-            )}
-            {lead.domain && (
-              <span className="flex items-center gap-1">
-                <Globe className="w-4 h-4" />
-                {lead.domain}
-              </span>
-            )}
+            {lead.company && <span className="flex items-center gap-1"><Building2 className="w-4 h-4" />{lead.company}</span>}
+            {lead.domain && <span className="flex items-center gap-1"><Globe className="w-4 h-4" />{lead.domain}</span>}
           </div>
-          <div className="flex gap-2 mt-3">
-            {(lead.tags || []).map((tag, i) => (
-              <Badge key={i} variant="secondary">{tag}</Badge>
+          <div className="flex gap-2 mt-3 flex-wrap">
+            {(formData.tags || []).map((tag, i) => (
+              <Badge key={i} variant="secondary" className="gap-1">
+                {tag}
+                <button onClick={() => handleRemoveTag(tag)} className="ml-1 hover:text-destructive">
+                  <X className="w-3 h-3" />
+                </button>
+              </Badge>
             ))}
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline" size="sm" className="h-6">
+                  <Plus className="w-3 h-3 mr-1" />
+                  Add Tag
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-64">
+                <div className="space-y-2">
+                  <Label>New Tag</Label>
+                  <div className="flex gap-2">
+                    <Input value={newTag} onChange={(e) => setNewTag(e.target.value)} placeholder="Tag name" />
+                    <Button size="sm" onClick={handleAddTag}>Add</Button>
+                  </div>
+                  {allTags.length > 0 && (
+                    <div className="pt-2">
+                      <Label className="text-xs text-muted-foreground">Existing Tags</Label>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {allTags.filter(t => !(formData.tags || []).includes(t)).slice(0, 10).map(tag => (
+                          <Badge key={tag} variant="outline" className="cursor-pointer hover:bg-accent" onClick={() => { setNewTag(tag); }}>
+                            {tag}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </PopoverContent>
+            </Popover>
           </div>
         </div>
         <div className="flex gap-2">
@@ -1033,11 +1180,10 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns }) {
         </div>
       </div>
 
-      {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="campaigns">Campaigns</TabsTrigger>
+          <TabsTrigger value="campaigns">Campaigns ({leadCampaigns.length})</TabsTrigger>
           <TabsTrigger value="activity">Activity</TabsTrigger>
           <TabsTrigger value="custom">Custom Fields</TabsTrigger>
         </TabsList>
@@ -1049,65 +1195,25 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns }) {
                 <div className="space-y-4">
                   <div>
                     <Label className="text-muted-foreground">Email</Label>
-                    {editing ? (
-                      <Input
-                        value={formData.email}
-                        onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                        className="mt-1"
-                      />
-                    ) : (
-                      <p className="font-medium">{lead.email}</p>
-                    )}
+                    {editing ? <Input value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} className="mt-1" /> : <p className="font-medium">{lead.email}</p>}
                   </div>
                   <div>
                     <Label className="text-muted-foreground">First Name</Label>
-                    {editing ? (
-                      <Input
-                        value={formData.firstName}
-                        onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
-                        className="mt-1"
-                      />
-                    ) : (
-                      <p className="font-medium">{lead.firstName || '-'}</p>
-                    )}
+                    {editing ? <Input value={formData.firstName} onChange={(e) => setFormData({ ...formData, firstName: e.target.value })} className="mt-1" /> : <p className="font-medium">{lead.firstName || '-'}</p>}
                   </div>
                   <div>
                     <Label className="text-muted-foreground">Last Name</Label>
-                    {editing ? (
-                      <Input
-                        value={formData.lastName}
-                        onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
-                        className="mt-1"
-                      />
-                    ) : (
-                      <p className="font-medium">{lead.lastName || '-'}</p>
-                    )}
+                    {editing ? <Input value={formData.lastName} onChange={(e) => setFormData({ ...formData, lastName: e.target.value })} className="mt-1" /> : <p className="font-medium">{lead.lastName || '-'}</p>}
                   </div>
                 </div>
                 <div className="space-y-4">
                   <div>
                     <Label className="text-muted-foreground">Company</Label>
-                    {editing ? (
-                      <Input
-                        value={formData.company}
-                        onChange={(e) => setFormData({ ...formData, company: e.target.value })}
-                        className="mt-1"
-                      />
-                    ) : (
-                      <p className="font-medium">{lead.company || '-'}</p>
-                    )}
+                    {editing ? <Input value={formData.company} onChange={(e) => setFormData({ ...formData, company: e.target.value })} className="mt-1" /> : <p className="font-medium">{lead.company || '-'}</p>}
                   </div>
                   <div>
                     <Label className="text-muted-foreground">Domain</Label>
-                    {editing ? (
-                      <Input
-                        value={formData.domain}
-                        onChange={(e) => setFormData({ ...formData, domain: e.target.value })}
-                        className="mt-1"
-                      />
-                    ) : (
-                      <p className="font-medium">{lead.domain || '-'}</p>
-                    )}
+                    {editing ? <Input value={formData.domain} onChange={(e) => setFormData({ ...formData, domain: e.target.value })} className="mt-1" /> : <p className="font-medium">{lead.domain || '-'}</p>}
                   </div>
                   <div>
                     <Label className="text-muted-foreground">Created At</Label>
@@ -1121,8 +1227,30 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns }) {
 
         <TabsContent value="campaigns" className="mt-6">
           <Card className="rounded-2xl">
-            <CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle>Associated Campaigns</CardTitle>
+              <Dialog open={addCampaignOpen} onOpenChange={setAddCampaignOpen}>
+                <DialogTrigger asChild>
+                  <Button size="sm"><Plus className="w-4 h-4 mr-2" />Add to Campaign</Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Add to Campaign</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-2 py-4">
+                    {availableCampaigns.length === 0 ? (
+                      <p className="text-muted-foreground">No available campaigns</p>
+                    ) : (
+                      availableCampaigns.map(campaign => (
+                        <button key={campaign.id} onClick={() => handleAddToCampaign(campaign.id)} className="w-full p-4 rounded-xl border border-border hover:bg-accent transition-colors text-left">
+                          <div className="font-medium">{campaign.name}</div>
+                          <div className="text-sm text-muted-foreground">{campaign.description}</div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </DialogContent>
+              </Dialog>
             </CardHeader>
             <CardContent>
               {leadCampaigns.length === 0 ? (
@@ -1135,9 +1263,12 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns }) {
                         <div className="font-medium">{campaign.name}</div>
                         <div className="text-sm text-muted-foreground">{campaign.description}</div>
                       </div>
-                      <Badge variant={campaign.status === 'active' ? 'default' : 'secondary'}>
-                        {campaign.status}
-                      </Badge>
+                      <div className="flex items-center gap-2">
+                        <Badge variant={campaign.status === 'active' ? 'default' : 'secondary'}>{campaign.status}</Badge>
+                        <Button variant="ghost" size="sm" onClick={() => handleRemoveFromCampaign(campaign.id)}>
+                          <X className="w-4 h-4" />
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1148,9 +1279,7 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns }) {
 
         <TabsContent value="activity" className="mt-6">
           <Card className="rounded-2xl">
-            <CardHeader>
-              <CardTitle>Activity Timeline</CardTitle>
-            </CardHeader>
+            <CardHeader><CardTitle>Activity Timeline</CardTitle></CardHeader>
             <CardContent>
               {activities.length === 0 ? (
                 <p className="text-muted-foreground">No activity recorded yet.</p>
@@ -1158,14 +1287,12 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns }) {
                 <div className="relative">
                   <div className="absolute left-4 top-0 bottom-0 w-px bg-border" />
                   <div className="space-y-6">
-                    {activities.map((activity, i) => (
+                    {activities.map((activity) => (
                       <div key={activity.id} className="relative flex gap-4 pl-10">
                         <div className="absolute left-2 w-4 h-4 rounded-full bg-accent border-2 border-background" />
                         <div>
                           <div className="font-medium text-sm">{activity.action}</div>
-                          <div className="text-xs text-muted-foreground">
-                            {new Date(activity.createdAt).toLocaleString()}
-                          </div>
+                          <div className="text-xs text-muted-foreground">{new Date(activity.createdAt).toLocaleString()}</div>
                         </div>
                       </div>
                     ))}
@@ -1182,31 +1309,18 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns }) {
               <CardTitle>Custom Fields</CardTitle>
               <Dialog open={customFieldOpen} onOpenChange={setCustomFieldOpen}>
                 <DialogTrigger asChild>
-                  <Button size="sm">
-                    <Plus className="w-4 h-4 mr-2" />
-                    Add Field
-                  </Button>
+                  <Button size="sm"><Plus className="w-4 h-4 mr-2" />Add Field</Button>
                 </DialogTrigger>
                 <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>Add Custom Field</DialogTitle>
-                  </DialogHeader>
+                  <DialogHeader><DialogTitle>Add Custom Field</DialogTitle></DialogHeader>
                   <div className="space-y-4 py-4">
                     <div className="space-y-2">
                       <Label>Field Name</Label>
-                      <Input
-                        value={newCustomField.name}
-                        onChange={(e) => setNewCustomField({ ...newCustomField, name: e.target.value })}
-                        placeholder="e.g., LinkedIn URL"
-                      />
+                      <Input value={newCustomField.name} onChange={(e) => setNewCustomField({ ...newCustomField, name: e.target.value })} placeholder="e.g., LinkedIn URL" />
                     </div>
                     <div className="space-y-2">
                       <Label>Field Value</Label>
-                      <Input
-                        value={newCustomField.value}
-                        onChange={(e) => setNewCustomField({ ...newCustomField, value: e.target.value })}
-                        placeholder="e.g., https://linkedin.com/in/..."
-                      />
+                      <Input value={newCustomField.value} onChange={(e) => setNewCustomField({ ...newCustomField, value: e.target.value })} placeholder="e.g., https://linkedin.com/in/..." />
                     </div>
                   </div>
                   <DialogFooter>
@@ -1217,11 +1331,11 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns }) {
               </Dialog>
             </CardHeader>
             <CardContent>
-              {Object.keys(lead.customFields || {}).length === 0 ? (
+              {Object.keys(formData.customFields || {}).length === 0 ? (
                 <p className="text-muted-foreground">No custom fields added yet.</p>
               ) : (
                 <div className="space-y-3">
-                  {Object.entries(lead.customFields || {}).map(([key, value]) => (
+                  {Object.entries(formData.customFields || {}).map(([key, value]) => (
                     <div key={key} className="flex items-center justify-between p-4 rounded-xl border border-border">
                       <div>
                         <div className="text-sm text-muted-foreground">{key}</div>
@@ -1239,7 +1353,171 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns }) {
   )
 }
 
-// Campaigns Page Component
+// Lists Page
+function ListsPage({ lists, fetchLists, onListClick, setNewListOpen, campaigns, allTags }) {
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">Lists</h1>
+          <p className="text-muted-foreground">Create and manage lead lists based on filters</p>
+        </div>
+        <Button onClick={() => setNewListOpen(true)}>
+          <Plus className="w-4 h-4 mr-2" />
+          Create List
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {lists.length === 0 ? (
+          <Card className="rounded-2xl col-span-full">
+            <CardContent className="p-8 text-center text-muted-foreground">
+              No lists created yet. Create a list to organize your leads.
+            </CardContent>
+          </Card>
+        ) : (
+          lists.map(list => (
+            <Card key={list.id} className="rounded-2xl cursor-pointer hover:bg-muted/30 transition-colors" onClick={() => onListClick(list)}>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <List className="w-5 h-5" />
+                  {list.name}
+                </CardTitle>
+                {list.description && <CardDescription>{list.description}</CardDescription>}
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center justify-between">
+                  <Badge variant="outline">{list.leadsCount || 0} leads</Badge>
+                  <span className="text-xs text-muted-foreground">{new Date(list.createdAt).toLocaleDateString()}</span>
+                </div>
+                {list.filters && (
+                  <div className="flex gap-1 mt-3 flex-wrap">
+                    {list.filters.dateFrom && <Badge variant="secondary" className="text-xs">From: {list.filters.dateFrom}</Badge>}
+                    {list.filters.dateTo && <Badge variant="secondary" className="text-xs">To: {list.filters.dateTo}</Badge>}
+                    {list.filters.tags?.map(tag => <Badge key={tag} variant="secondary" className="text-xs">{tag}</Badge>)}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          ))
+        )}
+      </div>
+    </div>
+  )
+}
+
+// List Detail Page
+function ListDetailPage({ list, onBack, campaigns, allTags, onExport }) {
+  const [leads, setLeads] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [selectedLeads, setSelectedLeads] = useState([])
+
+  useEffect(() => {
+    fetchListLeads()
+  }, [list.id])
+
+  const fetchListLeads = async () => {
+    setLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/leads?listId=${list.id}&limit=100`)
+      const data = await res.json()
+      setLeads(data.leads || [])
+    } catch (error) {
+      console.error('Failed to fetch list leads:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!confirm('Are you sure you want to delete this list?')) return
+    try {
+      await fetch(`${API_BASE}/lists/${list.id}`, { method: 'DELETE' })
+      toast.success('List deleted')
+      onBack()
+    } catch (error) {
+      toast.error('Failed to delete list')
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <Button variant="ghost" onClick={onBack} className="-ml-2">
+        <ChevronLeft className="w-4 h-4 mr-2" />
+        Back to Lists
+      </Button>
+
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold flex items-center gap-2">
+            <List className="w-6 h-6" />
+            {list.name}
+          </h1>
+          {list.description && <p className="text-muted-foreground mt-1">{list.description}</p>}
+          <div className="flex items-center gap-2 mt-3">
+            <Badge variant="outline">{leads.length} leads</Badge>
+            {list.filters?.dateFrom && <Badge variant="secondary">From: {list.filters.dateFrom}</Badge>}
+            {list.filters?.dateTo && <Badge variant="secondary">To: {list.filters.dateTo}</Badge>}
+            {list.filters?.tags?.map(tag => <Badge key={tag} variant="secondary">{tag}</Badge>)}
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => {
+            const params = new URLSearchParams()
+            if (list.filters?.dateFrom) params.set('dateFrom', list.filters.dateFrom)
+            if (list.filters?.dateTo) params.set('dateTo', list.filters.dateTo)
+            if (list.filters?.tags?.length) params.set('tag', list.filters.tags[0])
+            window.open(`${API_BASE}/leads/export?${params}`, '_blank')
+          }}>
+            <Download className="w-4 h-4 mr-2" />
+            Export
+          </Button>
+          <Button variant="destructive" onClick={handleDelete}>
+            <Trash2 className="w-4 h-4 mr-2" />
+            Delete List
+          </Button>
+        </div>
+      </div>
+
+      <Card className="rounded-2xl overflow-hidden">
+        <table className="w-full">
+          <thead className="bg-muted/50">
+            <tr>
+              <th className="p-4 text-left text-sm font-medium text-muted-foreground">Email</th>
+              <th className="p-4 text-left text-sm font-medium text-muted-foreground">Name</th>
+              <th className="p-4 text-left text-sm font-medium text-muted-foreground">Company</th>
+              <th className="p-4 text-left text-sm font-medium text-muted-foreground">Tags</th>
+              <th className="p-4 text-left text-sm font-medium text-muted-foreground">Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={5} className="p-8 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-muted-foreground" /></td></tr>
+            ) : leads.length === 0 ? (
+              <tr><td colSpan={5} className="p-8 text-center text-muted-foreground">No leads match this list's filters.</td></tr>
+            ) : (
+              leads.map(lead => (
+                <tr key={lead.id} className="border-t border-border">
+                  <td className="p-4 text-sm">{lead.email}</td>
+                  <td className="p-4 text-sm">{lead.firstName} {lead.lastName}</td>
+                  <td className="p-4 text-sm">{lead.company || '-'}</td>
+                  <td className="p-4">
+                    <div className="flex gap-1 flex-wrap">
+                      {(lead.tags || []).slice(0, 2).map((tag, i) => <Badge key={i} variant="secondary" className="text-xs">{tag}</Badge>)}
+                    </div>
+                  </td>
+                  <td className="p-4 text-sm text-muted-foreground">{new Date(lead.createdAt).toLocaleDateString()}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  )
+}
+
+// Campaigns Page
 function CampaignsPage({ campaigns, fetchCampaigns, onCampaignClick, setNewCampaignOpen }) {
   return (
     <div className="space-y-4">
@@ -1268,60 +1546,33 @@ function CampaignsPage({ campaigns, fetchCampaigns, onCampaignClick, setNewCampa
           </thead>
           <tbody>
             {campaigns.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="p-8 text-center text-muted-foreground">
-                  No campaigns yet. Create your first campaign.
-                </td>
-              </tr>
+              <tr><td colSpan={6} className="p-8 text-center text-muted-foreground">No campaigns yet. Create your first campaign.</td></tr>
             ) : (
               campaigns.map(campaign => (
-                <tr
-                  key={campaign.id}
-                  className="border-t border-border hover:bg-muted/30 cursor-pointer transition-colors"
-                  onClick={() => onCampaignClick(campaign)}
-                >
+                <tr key={campaign.id} className="border-t border-border hover:bg-muted/30 cursor-pointer transition-colors" onClick={() => onCampaignClick(campaign)}>
                   <td className="p-4">
                     <div className="font-medium">{campaign.name}</div>
-                    {campaign.description && (
-                      <div className="text-sm text-muted-foreground truncate max-w-xs">
-                        {campaign.description}
-                      </div>
-                    )}
+                    {campaign.description && <div className="text-sm text-muted-foreground truncate max-w-xs">{campaign.description}</div>}
                   </td>
-                  <td className="p-4">
-                    <Badge variant="outline">{campaign.leadsCount || 0}</Badge>
-                  </td>
-                  <td className="p-4 text-sm text-muted-foreground">
-                    {new Date(campaign.createdAt).toLocaleDateString()}
-                  </td>
+                  <td className="p-4"><Badge variant="outline">{campaign.leadsCount || 0}</Badge></td>
+                  <td className="p-4 text-sm text-muted-foreground">{new Date(campaign.createdAt).toLocaleDateString()}</td>
                   <td className="p-4 text-sm">{campaign.owner}</td>
-                  <td className="p-4">
-                    <Badge variant={campaign.status === 'active' ? 'default' : 'secondary'}>
-                      {campaign.status}
-                    </Badge>
-                  </td>
+                  <td className="p-4"><Badge variant={campaign.status === 'active' ? 'default' : 'secondary'}>{campaign.status}</Badge></td>
                   <td className="p-4" onClick={(e) => e.stopPropagation()}>
                     <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon">
-                          <MoreHorizontal className="w-4 h-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
+                      <DropdownMenuTrigger asChild><Button variant="ghost" size="icon"><MoreHorizontal className="w-4 h-4" /></Button></DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={() => onCampaignClick(campaign)}>
-                          View Details
+                        <DropdownMenuItem onClick={() => onCampaignClick(campaign)}>View Details</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => window.open(`${API_BASE}/campaigns/${campaign.id}/export`, '_blank')}>
+                          <Download className="w-4 h-4 mr-2" />
+                          Export Leads
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          className="text-destructive"
-                          onClick={async () => {
-                            await fetch(`${API_BASE}/campaigns/${campaign.id}`, { method: 'DELETE' })
-                            toast.success('Campaign deleted')
-                            fetchCampaigns()
-                          }}
-                        >
-                          Delete
-                        </DropdownMenuItem>
+                        <DropdownMenuItem className="text-destructive" onClick={async () => {
+                          await fetch(`${API_BASE}/campaigns/${campaign.id}`, { method: 'DELETE' })
+                          toast.success('Campaign deleted')
+                          fetchCampaigns()
+                        }}>Delete</DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </td>
@@ -1335,8 +1586,8 @@ function CampaignsPage({ campaigns, fetchCampaigns, onCampaignClick, setNewCampa
   )
 }
 
-// Campaign Detail Page Component
-function CampaignDetailPage({ campaign, onBack, onAddLeads }) {
+// Campaign Detail Page
+function CampaignDetailPage({ campaign, onBack, onAddLeads, onExport }) {
   const [leads, setLeads] = useState([])
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('leads')
@@ -1365,32 +1616,30 @@ function CampaignDetailPage({ campaign, onBack, onAddLeads }) {
         Back to Campaigns
       </Button>
 
-      {/* Header */}
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-semibold flex items-center gap-2">
             <Target className="w-6 h-6" />
             {campaign.name}
           </h1>
-          {campaign.description && (
-            <p className="text-muted-foreground mt-1">{campaign.description}</p>
-          )}
+          {campaign.description && <p className="text-muted-foreground mt-1">{campaign.description}</p>}
           <div className="flex items-center gap-4 mt-3">
-            <Badge variant={campaign.status === 'active' ? 'default' : 'secondary'}>
-              {campaign.status}
-            </Badge>
-            <span className="text-sm text-muted-foreground">
-              Created {new Date(campaign.createdAt).toLocaleDateString()}
-            </span>
+            <Badge variant={campaign.status === 'active' ? 'default' : 'secondary'}>{campaign.status}</Badge>
+            <span className="text-sm text-muted-foreground">Created {new Date(campaign.createdAt).toLocaleDateString()}</span>
           </div>
         </div>
-        <Button onClick={onAddLeads}>
-          <Plus className="w-4 h-4 mr-2" />
-          Add Leads
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={onExport}>
+            <Download className="w-4 h-4 mr-2" />
+            Export Leads
+          </Button>
+          <Button onClick={onAddLeads}>
+            <Plus className="w-4 h-4 mr-2" />
+            Add Leads
+          </Button>
+        </div>
       </div>
 
-      {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="leads">Leads ({leads.length})</TabsTrigger>
@@ -1410,26 +1659,16 @@ function CampaignDetailPage({ campaign, onBack, onAddLeads }) {
               </thead>
               <tbody>
                 {loading ? (
-                  <tr>
-                    <td colSpan={4} className="p-8 text-center">
-                      <Loader2 className="w-6 h-6 animate-spin mx-auto text-muted-foreground" />
-                    </td>
-                  </tr>
+                  <tr><td colSpan={4} className="p-8 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-muted-foreground" /></td></tr>
                 ) : leads.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className="p-8 text-center text-muted-foreground">
-                      No leads in this campaign yet.
-                    </td>
-                  </tr>
+                  <tr><td colSpan={4} className="p-8 text-center text-muted-foreground">No leads in this campaign yet.</td></tr>
                 ) : (
                   leads.map(lead => (
                     <tr key={lead.id} className="border-t border-border">
                       <td className="p-4 text-sm">{lead.email}</td>
                       <td className="p-4 text-sm">{lead.firstName} {lead.lastName}</td>
                       <td className="p-4 text-sm">{lead.company || '-'}</td>
-                      <td className="p-4 text-sm text-muted-foreground">
-                        {new Date(lead.createdAt).toLocaleDateString()}
-                      </td>
+                      <td className="p-4 text-sm text-muted-foreground">{new Date(lead.createdAt).toLocaleDateString()}</td>
                     </tr>
                   ))
                 )}
@@ -1448,7 +1687,7 @@ function CampaignDetailPage({ campaign, onBack, onAddLeads }) {
   )
 }
 
-// Import Center Page Component
+// Import Center Page
 function ImportCenterPage({ onImportComplete }) {
   const [step, setStep] = useState(1)
   const [file, setFile] = useState(null)
@@ -1481,7 +1720,6 @@ function ImportCenterPage({ onImportComplete }) {
         setCsvHeaders(results.meta.fields || [])
         setCsvData(results.data.filter(row => Object.values(row).some(v => v)))
         
-        // Auto-map common column names
         const autoMapping = {}
         results.meta.fields?.forEach(header => {
           const lower = header.toLowerCase()
@@ -1507,7 +1745,6 @@ function ImportCenterPage({ onImportComplete }) {
     setStep(3)
 
     try {
-      // Transform data based on mapping
       const leads = csvData.map(row => {
         const lead = { customFields: {} }
         Object.entries(columnMapping).forEach(([csvColumn, field]) => {
@@ -1519,7 +1756,7 @@ function ImportCenterPage({ onImportComplete }) {
           }
         })
         return lead
-      }).filter(lead => lead.email) // Only import rows with email
+      }).filter(lead => lead.email)
 
       const res = await fetch(`${API_BASE}/leads/bulk`, {
         method: 'POST',
@@ -1557,28 +1794,20 @@ function ImportCenterPage({ onImportComplete }) {
         <p className="text-muted-foreground">Import leads from CSV files</p>
       </div>
 
-      {/* Progress Steps */}
       <div className="flex items-center gap-4">
         {['Upload', 'Map Columns', 'Import', 'Complete'].map((label, i) => (
           <div key={i} className="flex items-center gap-2">
             <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
-              step > i + 1 ? 'bg-primary text-primary-foreground' :
-              step === i + 1 ? 'bg-accent text-foreground' :
-              'bg-muted text-muted-foreground'
+              step > i + 1 ? 'bg-primary text-primary-foreground' : step === i + 1 ? 'bg-accent text-foreground' : 'bg-muted text-muted-foreground'
             }`}>
               {step > i + 1 ? <Check className="w-4 h-4" /> : i + 1}
             </div>
-            <span className={`text-sm hidden sm:inline ${
-              step >= i + 1 ? 'text-foreground' : 'text-muted-foreground'
-            }`}>{label}</span>
-            {i < 3 && <div className={`w-8 h-px ${
-              step > i + 1 ? 'bg-primary' : 'bg-border'
-            }`} />}
+            <span className={`text-sm hidden sm:inline ${step >= i + 1 ? 'text-foreground' : 'text-muted-foreground'}`}>{label}</span>
+            {i < 3 && <div className={`w-8 h-px ${step > i + 1 ? 'bg-primary' : 'bg-border'}`} />}
           </div>
         ))}
       </div>
 
-      {/* Step 1: Upload */}
       {step === 1 && (
         <Card className="rounded-2xl">
           <CardContent className="p-8">
@@ -1600,13 +1829,7 @@ function ImportCenterPage({ onImportComplete }) {
                 }
               }}
             >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".csv"
-                onChange={handleFileSelect}
-                className="hidden"
-              />
+              <input ref={fileInputRef} type="file" accept=".csv" onChange={handleFileSelect} className="hidden" />
               <FileSpreadsheet className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-medium mb-2">Drop your CSV file here</h3>
               <p className="text-muted-foreground mb-4">or click to browse</p>
@@ -1616,15 +1839,12 @@ function ImportCenterPage({ onImportComplete }) {
         </Card>
       )}
 
-      {/* Step 2: Column Mapping */}
       {step === 2 && (
         <div className="space-y-6">
           <Card className="rounded-2xl">
             <CardHeader>
               <CardTitle>Map Columns</CardTitle>
-              <CardDescription>
-                Match your CSV columns to lead fields
-              </CardDescription>
+              <CardDescription>Match your CSV columns to lead fields</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
@@ -1632,17 +1852,10 @@ function ImportCenterPage({ onImportComplete }) {
                   <div key={header} className="flex items-center gap-4">
                     <div className="w-48 text-sm font-medium truncate">{header}</div>
                     <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0" />
-                    <Select
-                      value={columnMapping[header] || 'skip'}
-                      onValueChange={(value) => setColumnMapping({ ...columnMapping, [header]: value })}
-                    >
-                      <SelectTrigger className="w-48">
-                        <SelectValue />
-                      </SelectTrigger>
+                    <Select value={columnMapping[header] || 'skip'} onValueChange={(value) => setColumnMapping({ ...columnMapping, [header]: value })}>
+                      <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        {fieldOptions.map(opt => (
-                          <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
-                        ))}
+                        {fieldOptions.map(opt => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
@@ -1651,27 +1864,20 @@ function ImportCenterPage({ onImportComplete }) {
             </CardContent>
           </Card>
 
-          {/* Preview */}
           <Card className="rounded-2xl">
-            <CardHeader>
-              <CardTitle>Preview (First 20 rows)</CardTitle>
-            </CardHeader>
+            <CardHeader><CardTitle>Preview (First 20 rows)</CardTitle></CardHeader>
             <CardContent>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border">
-                      {csvHeaders.map(h => (
-                        <th key={h} className="p-2 text-left font-medium text-muted-foreground">{h}</th>
-                      ))}
+                      {csvHeaders.map(h => <th key={h} className="p-2 text-left font-medium text-muted-foreground">{h}</th>)}
                     </tr>
                   </thead>
                   <tbody>
                     {csvData.slice(0, 20).map((row, i) => (
                       <tr key={i} className="border-b border-border">
-                        {csvHeaders.map(h => (
-                          <td key={h} className="p-2 truncate max-w-xs">{row[h]}</td>
-                        ))}
+                        {csvHeaders.map(h => <td key={h} className="p-2 truncate max-w-xs">{row[h]}</td>)}
                       </tr>
                     ))}
                   </tbody>
@@ -1682,14 +1888,13 @@ function ImportCenterPage({ onImportComplete }) {
 
           <div className="flex gap-4">
             <Button variant="outline" onClick={resetImport}>Back</Button>
-            <Button onClick={handleImport} disabled={!columnMapping.email || !Object.values(columnMapping).includes('email')}>
+            <Button onClick={handleImport} disabled={!Object.values(columnMapping).includes('email')}>
               Import {csvData.filter(r => r[Object.entries(columnMapping).find(([k, v]) => v === 'email')?.[0]]).length} Leads
             </Button>
           </div>
         </div>
       )}
 
-      {/* Step 3: Importing */}
       {step === 3 && (
         <Card className="rounded-2xl">
           <CardContent className="p-12 text-center">
@@ -1700,7 +1905,6 @@ function ImportCenterPage({ onImportComplete }) {
         </Card>
       )}
 
-      {/* Step 4: Complete */}
       {step === 4 && importResult && (
         <Card className="rounded-2xl">
           <CardContent className="p-12 text-center">
@@ -1719,7 +1923,7 @@ function ImportCenterPage({ onImportComplete }) {
   )
 }
 
-// Team Page Component (UI only)
+// Team Page
 function TeamPage() {
   const teamMembers = [
     { id: 1, name: 'Admin User', email: 'admin@leadOS.com', role: 'Admin', status: 'Active' },
@@ -1734,10 +1938,7 @@ function TeamPage() {
           <h1 className="text-2xl font-semibold">Team</h1>
           <p className="text-muted-foreground">Manage team access and permissions</p>
         </div>
-        <Button>
-          <Plus className="w-4 h-4 mr-2" />
-          Invite Member
-        </Button>
+        <Button><Plus className="w-4 h-4 mr-2" />Invite Member</Button>
       </div>
 
       <Card className="rounded-2xl overflow-hidden">
@@ -1755,28 +1956,16 @@ function TeamPage() {
               <tr key={member.id} className="border-t border-border">
                 <td className="p-4">
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-accent flex items-center justify-center">
-                      {member.name.charAt(0)}
-                    </div>
+                    <div className="w-10 h-10 rounded-full bg-accent flex items-center justify-center">{member.name.charAt(0)}</div>
                     <div>
                       <div className="font-medium">{member.name}</div>
                       <div className="text-sm text-muted-foreground">{member.email}</div>
                     </div>
                   </div>
                 </td>
-                <td className="p-4">
-                  <Badge variant="outline">{member.role}</Badge>
-                </td>
-                <td className="p-4">
-                  <Badge variant={member.status === 'Active' ? 'default' : 'secondary'}>
-                    {member.status}
-                  </Badge>
-                </td>
-                <td className="p-4 text-right">
-                  <Button variant="ghost" size="icon">
-                    <MoreHorizontal className="w-4 h-4" />
-                  </Button>
-                </td>
+                <td className="p-4"><Badge variant="outline">{member.role}</Badge></td>
+                <td className="p-4"><Badge variant={member.status === 'Active' ? 'default' : 'secondary'}>{member.status}</Badge></td>
+                <td className="p-4 text-right"><Button variant="ghost" size="icon"><MoreHorizontal className="w-4 h-4" /></Button></td>
               </tr>
             ))}
           </tbody>
@@ -1786,7 +1975,7 @@ function TeamPage() {
   )
 }
 
-// Settings Page Component
+// Settings Page
 function SettingsPage() {
   return (
     <div className="space-y-6">
@@ -1826,7 +2015,7 @@ function SettingsPage() {
             <CardDescription>Export and manage your data</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <Button variant="outline">
+            <Button variant="outline" onClick={() => window.open(`${API_BASE}/leads/export`, '_blank')}>
               <Download className="w-4 h-4 mr-2" />
               Export All Leads
             </Button>
@@ -1837,29 +2026,16 @@ function SettingsPage() {
   )
 }
 
-// New Lead Dialog Component
+// Dialogs
 function NewLeadDialog({ open, onOpenChange, onSuccess }) {
-  const [formData, setFormData] = useState({
-    email: '',
-    firstName: '',
-    lastName: '',
-    company: '',
-    domain: ''
-  })
+  const [formData, setFormData] = useState({ email: '', firstName: '', lastName: '', company: '', domain: '' })
   const [loading, setLoading] = useState(false)
 
   const handleSubmit = async () => {
-    if (!formData.email) {
-      toast.error('Email is required')
-      return
-    }
+    if (!formData.email) { toast.error('Email is required'); return }
     setLoading(true)
     try {
-      await fetch(`${API_BASE}/leads`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData)
-      })
+      await fetch(`${API_BASE}/leads`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formData) })
       toast.success('Lead created')
       onOpenChange(false)
       setFormData({ email: '', firstName: '', lastName: '', company: '', domain: '' })
@@ -1881,81 +2057,45 @@ function NewLeadDialog({ open, onOpenChange, onSuccess }) {
         <div className="space-y-4 py-4">
           <div className="space-y-2">
             <Label>Email *</Label>
-            <Input
-              value={formData.email}
-              onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-              placeholder="john@example.com"
-              type="email"
-            />
+            <Input value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} placeholder="john@example.com" type="email" />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>First Name</Label>
-              <Input
-                value={formData.firstName}
-                onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
-                placeholder="John"
-              />
+              <Input value={formData.firstName} onChange={(e) => setFormData({ ...formData, firstName: e.target.value })} placeholder="John" />
             </div>
             <div className="space-y-2">
               <Label>Last Name</Label>
-              <Input
-                value={formData.lastName}
-                onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
-                placeholder="Doe"
-              />
+              <Input value={formData.lastName} onChange={(e) => setFormData({ ...formData, lastName: e.target.value })} placeholder="Doe" />
             </div>
           </div>
           <div className="space-y-2">
             <Label>Company</Label>
-            <Input
-              value={formData.company}
-              onChange={(e) => setFormData({ ...formData, company: e.target.value })}
-              placeholder="Acme Inc"
-            />
+            <Input value={formData.company} onChange={(e) => setFormData({ ...formData, company: e.target.value })} placeholder="Acme Inc" />
           </div>
           <div className="space-y-2">
             <Label>Domain</Label>
-            <Input
-              value={formData.domain}
-              onChange={(e) => setFormData({ ...formData, domain: e.target.value })}
-              placeholder="acme.com"
-            />
+            <Input value={formData.domain} onChange={(e) => setFormData({ ...formData, domain: e.target.value })} placeholder="acme.com" />
           </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={handleSubmit} disabled={loading}>
-            {loading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-            Create Lead
-          </Button>
+          <Button onClick={handleSubmit} disabled={loading}>{loading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Create Lead</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   )
 }
 
-// New Campaign Dialog Component
 function NewCampaignDialog({ open, onOpenChange, onSuccess }) {
-  const [formData, setFormData] = useState({
-    name: '',
-    description: '',
-    status: 'active'
-  })
+  const [formData, setFormData] = useState({ name: '', description: '', status: 'active' })
   const [loading, setLoading] = useState(false)
 
   const handleSubmit = async () => {
-    if (!formData.name) {
-      toast.error('Campaign name is required')
-      return
-    }
+    if (!formData.name) { toast.error('Campaign name is required'); return }
     setLoading(true)
     try {
-      await fetch(`${API_BASE}/campaigns`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData)
-      })
+      await fetch(`${API_BASE}/campaigns`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formData) })
       toast.success('Campaign created')
       onOpenChange(false)
       setFormData({ name: '', description: '', status: 'active' })
@@ -1977,30 +2117,16 @@ function NewCampaignDialog({ open, onOpenChange, onSuccess }) {
         <div className="space-y-4 py-4">
           <div className="space-y-2">
             <Label>Campaign Name *</Label>
-            <Input
-              value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              placeholder="Q1 Outreach"
-            />
+            <Input value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} placeholder="Q1 Outreach" />
           </div>
           <div className="space-y-2">
             <Label>Description</Label>
-            <Textarea
-              value={formData.description}
-              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-              placeholder="Campaign description..."
-              rows={3}
-            />
+            <Textarea value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} placeholder="Campaign description..." rows={3} />
           </div>
           <div className="space-y-2">
             <Label>Status</Label>
-            <Select
-              value={formData.status}
-              onValueChange={(value) => setFormData({ ...formData, status: value })}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
+            <Select value={formData.status} onValueChange={(value) => setFormData({ ...formData, status: value })}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="active">Active</SelectItem>
                 <SelectItem value="paused">Paused</SelectItem>
@@ -2011,25 +2137,103 @@ function NewCampaignDialog({ open, onOpenChange, onSuccess }) {
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={handleSubmit} disabled={loading}>
-            {loading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-            Create Campaign
-          </Button>
+          <Button onClick={handleSubmit} disabled={loading}>{loading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Create Campaign</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   )
 }
 
-// Bulk Tag Dialog Component
-function BulkTagDialog({ open, onOpenChange, onSubmit, count }) {
+function NewListDialog({ open, onOpenChange, onSuccess, campaigns, allTags }) {
+  const [formData, setFormData] = useState({ name: '', description: '', filters: { dateFrom: '', dateTo: '', tags: [], campaigns: [] } })
+  const [loading, setLoading] = useState(false)
+
+  const handleSubmit = async () => {
+    if (!formData.name) { toast.error('List name is required'); return }
+    setLoading(true)
+    try {
+      await fetch(`${API_BASE}/lists`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formData) })
+      toast.success('List created')
+      onOpenChange(false)
+      setFormData({ name: '', description: '', filters: { dateFrom: '', dateTo: '', tags: [], campaigns: [] } })
+      onSuccess()
+    } catch (error) {
+      toast.error('Failed to create list')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const toggleTag = (tag) => {
+    const tags = formData.filters.tags.includes(tag)
+      ? formData.filters.tags.filter(t => t !== tag)
+      : [...formData.filters.tags, tag]
+    setFormData({ ...formData, filters: { ...formData.filters, tags } })
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>New List</DialogTitle>
+          <DialogDescription>Create a list based on filters</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-4">
+          <div className="space-y-2">
+            <Label>List Name *</Label>
+            <Input value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} placeholder="Hot Leads Q1" />
+          </div>
+          <div className="space-y-2">
+            <Label>Description</Label>
+            <Textarea value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} placeholder="List description..." rows={2} />
+          </div>
+          <Separator />
+          <div className="space-y-2">
+            <Label className="flex items-center gap-2"><CalendarRange className="w-4 h-4" />Date Range</Label>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label className="text-xs text-muted-foreground">From</Label>
+                <Input type="date" value={formData.filters.dateFrom} onChange={(e) => setFormData({ ...formData, filters: { ...formData.filters, dateFrom: e.target.value } })} />
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">To</Label>
+                <Input type="date" value={formData.filters.dateTo} onChange={(e) => setFormData({ ...formData, filters: { ...formData.filters, dateTo: e.target.value } })} />
+              </div>
+            </div>
+          </div>
+          {allTags.length > 0 && (
+            <div className="space-y-2">
+              <Label className="flex items-center gap-2"><Tags className="w-4 h-4" />Filter by Tags</Label>
+              <div className="flex flex-wrap gap-2">
+                {allTags.map(tag => (
+                  <Badge
+                    key={tag}
+                    variant={formData.filters.tags.includes(tag) ? 'default' : 'outline'}
+                    className="cursor-pointer"
+                    onClick={() => toggleTag(tag)}
+                  >
+                    {tag}
+                    {formData.filters.tags.includes(tag) && <Check className="w-3 h-3 ml-1" />}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button onClick={handleSubmit} disabled={loading}>{loading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Create List</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function BulkTagDialog({ open, onOpenChange, onSubmit, count, allTags }) {
   const [tag, setTag] = useState('')
 
   const handleSubmit = () => {
-    if (tag) {
-      onSubmit(tag)
-      setTag('')
-    }
+    if (tag) { onSubmit(tag); setTag('') }
   }
 
   return (
@@ -2037,18 +2241,23 @@ function BulkTagDialog({ open, onOpenChange, onSubmit, count }) {
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Add Tag</DialogTitle>
-          <DialogDescription>
-            Add a tag to {count} selected leads
-          </DialogDescription>
+          <DialogDescription>Add a tag to {count} selected leads</DialogDescription>
         </DialogHeader>
-        <div className="py-4">
-          <Label>Tag Name</Label>
-          <Input
-            value={tag}
-            onChange={(e) => setTag(e.target.value)}
-            placeholder="e.g., Hot Lead"
-            className="mt-2"
-          />
+        <div className="py-4 space-y-4">
+          <div>
+            <Label>Tag Name</Label>
+            <Input value={tag} onChange={(e) => setTag(e.target.value)} placeholder="e.g., Hot Lead" className="mt-2" />
+          </div>
+          {allTags.length > 0 && (
+            <div>
+              <Label className="text-xs text-muted-foreground">Or select existing tag</Label>
+              <div className="flex flex-wrap gap-2 mt-2">
+                {allTags.slice(0, 10).map(t => (
+                  <Badge key={t} variant="outline" className="cursor-pointer hover:bg-accent" onClick={() => setTag(t)}>{t}</Badge>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
@@ -2059,7 +2268,6 @@ function BulkTagDialog({ open, onOpenChange, onSubmit, count }) {
   )
 }
 
-// Add Leads to Campaign Dialog Component
 function AddLeadsToCampaignDialog({ open, onOpenChange, campaign, onSuccess }) {
   const [leads, setLeads] = useState([])
   const [selectedLeads, setSelectedLeads] = useState([])
@@ -2067,9 +2275,7 @@ function AddLeadsToCampaignDialog({ open, onOpenChange, campaign, onSuccess }) {
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    if (open) {
-      fetchLeads()
-    }
+    if (open) fetchLeads()
   }, [open, search])
 
   const fetchLeads = async () => {
@@ -2077,7 +2283,6 @@ function AddLeadsToCampaignDialog({ open, onOpenChange, campaign, onSuccess }) {
       const params = new URLSearchParams({ limit: '50', ...(search && { search }) })
       const res = await fetch(`${API_BASE}/leads?${params}`)
       const data = await res.json()
-      // Filter out leads already in campaign
       setLeads((data.leads || []).filter(l => !(l.campaigns || []).includes(campaign?.id)))
     } catch (error) {
       console.error('Failed to fetch leads:', error)
@@ -2091,11 +2296,7 @@ function AddLeadsToCampaignDialog({ open, onOpenChange, campaign, onSuccess }) {
       await fetch(`${API_BASE}/leads/bulk-action`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'addToCampaign',
-          leadIds: selectedLeads,
-          data: { campaignId: campaign.id }
-        })
+        body: JSON.stringify({ action: 'addToCampaign', leadIds: selectedLeads, data: { campaignId: campaign.id } })
       })
       toast.success(`Added ${selectedLeads.length} leads to campaign`)
       setSelectedLeads([])
@@ -2113,35 +2314,21 @@ function AddLeadsToCampaignDialog({ open, onOpenChange, campaign, onSuccess }) {
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>Add Leads to {campaign?.name}</DialogTitle>
-          <DialogDescription>
-            Select leads to add to this campaign
-          </DialogDescription>
+          <DialogDescription>Select leads to add to this campaign</DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
-          <Input
-            placeholder="Search leads..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+          <Input placeholder="Search leads..." value={search} onChange={(e) => setSearch(e.target.value)} />
           <ScrollArea className="h-[300px] border rounded-xl">
             {leads.map(lead => (
               <div
                 key={lead.id}
                 className="flex items-center gap-3 p-3 hover:bg-muted cursor-pointer"
-                onClick={() => {
-                  setSelectedLeads(prev =>
-                    prev.includes(lead.id)
-                      ? prev.filter(id => id !== lead.id)
-                      : [...prev, lead.id]
-                  )
-                }}
+                onClick={() => setSelectedLeads(prev => prev.includes(lead.id) ? prev.filter(id => id !== lead.id) : [...prev, lead.id])}
               >
                 <Checkbox checked={selectedLeads.includes(lead.id)} />
                 <div>
                   <div className="font-medium text-sm">{lead.email}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {lead.firstName} {lead.lastName} {lead.company && `• ${lead.company}`}
-                  </div>
+                  <div className="text-xs text-muted-foreground">{lead.firstName} {lead.lastName} {lead.company && `• ${lead.company}`}</div>
                 </div>
               </div>
             ))}
