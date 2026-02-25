@@ -28,6 +28,41 @@ function corsHeaders() {
   };
 }
 
+// Helper to convert leads to CSV
+function leadsToCSV(leads) {
+  if (leads.length === 0) return '';
+  
+  const headers = ['email', 'firstName', 'lastName', 'company', 'domain', 'tags', 'createdAt'];
+  const customFieldKeys = new Set();
+  
+  // Collect all custom field keys
+  leads.forEach(lead => {
+    if (lead.customFields) {
+      Object.keys(lead.customFields).forEach(key => customFieldKeys.add(key));
+    }
+  });
+  
+  const allHeaders = [...headers, ...Array.from(customFieldKeys)];
+  
+  const csvRows = [allHeaders.join(',')];
+  
+  leads.forEach(lead => {
+    const row = allHeaders.map(header => {
+      if (header === 'tags') {
+        return `"${(lead.tags || []).join(';')}"`;
+      }
+      if (customFieldKeys.has(header)) {
+        return `"${(lead.customFields?.[header] || '').replace(/"/g, '""')}"`;
+      }
+      const value = lead[header] || '';
+      return `"${String(value).replace(/"/g, '""')}"`;
+    });
+    csvRows.push(row.join(','));
+  });
+  
+  return csvRows.join('\n');
+}
+
 export async function OPTIONS() {
   return NextResponse.json({}, { headers: corsHeaders() });
 }
