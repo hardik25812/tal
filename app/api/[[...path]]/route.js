@@ -284,6 +284,63 @@ export async function GET(request, { params }) {
       return NextResponse.json(campaign, { headers: corsHeaders() });
     }
 
+    // Export campaign leads to CSV
+    if (pathStr.match(/^campaigns\/[^/]+\/export$/)) {
+      const campaignId = pathStr.split('/')[1];
+      const leads = await db.collection('leads').find({ campaigns: campaignId }).toArray();
+      const csv = leadsToCSV(leads);
+
+      const campaign = await db.collection('campaigns').findOne({ id: campaignId });
+      const filename = campaign ? campaign.name.replace(/[^a-z0-9]/gi, '-').toLowerCase() : campaignId;
+
+      return new NextResponse(csv, {
+        headers: {
+          ...corsHeaders(),
+          'Content-Type': 'text/csv',
+          'Content-Disposition': `attachment; filename="${filename}-leads-${new Date().toISOString().split('T')[0]}.csv"`
+        }
+      });
+    }
+
+    // Get all lists
+    if (pathStr === 'lists') {
+      const lists = await db.collection('lists')
+        .find({})
+        .sort({ createdAt: -1 })
+        .toArray();
+      
+      // Add lead counts for each list
+      for (let list of lists) {
+        let query = {};
+        if (list.filters) {
+          if (list.filters.dateFrom || list.filters.dateTo) {
+            query.createdAt = {};
+            if (list.filters.dateFrom) query.createdAt.$gte = list.filters.dateFrom;
+            if (list.filters.dateTo) query.createdAt.$lte = list.filters.dateTo;
+          }
+          if (list.filters.tags && list.filters.tags.length > 0) {
+            query.tags = { $in: list.filters.tags };
+          }
+          if (list.filters.campaigns && list.filters.campaigns.length > 0) {
+            query.campaigns = { $in: list.filters.campaigns };
+          }
+        }
+        list.leadsCount = await db.collection('leads').countDocuments(query);
+      }
+      
+      return NextResponse.json(lists, { headers: corsHeaders() });
+    }
+
+    // Get single list
+    if (pathStr.startsWith('lists/') && pathStr.split('/').length === 2) {
+      const listId = pathStr.split('/')[1];
+      const list = await db.collection('lists').findOne({ id: listId });
+      if (!list) {
+        return NextResponse.json({ error: 'List not found' }, { status: 404, headers: corsHeaders() });
+      }
+      return NextResponse.json(list, { headers: corsHeaders() });
+    }
+
     // Get custom fields schema
     if (pathStr === 'custom-fields') {
       const fields = await db.collection('customFields').find({}).toArray();
