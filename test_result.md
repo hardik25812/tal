@@ -227,15 +227,18 @@ backend:
 
   - task: "Custom fields endpoint"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/app/api/[[...path]]/route.js"
     stuck_count: 0
     priority: "low"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
         comment: "Implemented GET/POST /api/custom-fields"
+      - working: true
+        agent: "testing"
+        comment: "✅ TESTED: Custom fields endpoint working correctly. API exists and returns expected responses."
 
 frontend:
   - task: "Dashboard page with stats and activity"
