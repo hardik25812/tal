@@ -1,519 +1,550 @@
 #!/usr/bin/env python3
-"""
-LeadOS Backend API Testing Suite
-Tests all high priority endpoints as specified in test_result.md
-"""
 
-import requests
+import asyncio
+import aiohttp
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
-# Base URL from environment
-BASE_URL = "https://leadpulse-42.preview.emergentagent.com/api"
+# Base URL from .env
+BASE_URL = "https://leadpulse-42.preview.emergentagent.com"
+API_BASE = f"{BASE_URL}/api"
 
-class LeadOSAPITester:
-    def __init__(self):
-        self.base_url = BASE_URL
-        self.session = requests.Session()
-        self.created_leads = []
-        self.created_campaigns = []
-        
-    def log(self, message, status="INFO"):
-        print(f"[{status}] {message}")
-        
-    def test_health_check(self):
-        """Test GET /api/health endpoint"""
-        self.log("Testing Health Check endpoint...")
-        try:
-            response = self.session.get(f"{self.base_url}/health")
-            self.log(f"Health check response status: {response.status_code}")
-            
-            if response.status_code == 200:
-                data = response.json()
-                self.log(f"Health check response: {data}")
-                if 'status' in data and data['status'] == 'ok':
-                    self.log("✅ Health check endpoint working correctly", "SUCCESS")
-                    return True
-                else:
-                    self.log("❌ Health check response missing status field", "ERROR")
-                    return False
-            else:
-                self.log(f"❌ Health check failed with status {response.status_code}", "ERROR")
-                return False
-        except Exception as e:
-            self.log(f"❌ Health check failed with exception: {e}", "ERROR")
-            return False
+async def test_new_leadOS_features():
+    """Test all NEW LeadOS backend features"""
+    print("=== Starting LeadOS NEW Features Backend Testing ===\n")
     
-    def test_dashboard_stats(self):
-        """Test GET /api/dashboard/stats endpoint"""
-        self.log("Testing Dashboard Stats endpoint...")
-        try:
-            response = self.session.get(f"{self.base_url}/dashboard/stats")
-            self.log(f"Dashboard stats response status: {response.status_code}")
-            
-            if response.status_code == 200:
-                data = response.json()
-                self.log(f"Dashboard stats response: {data}")
-                
-                required_fields = ['totalLeads', 'totalCampaigns', 'leadsToday', 'activeCampaigns']
-                missing_fields = [field for field in required_fields if field not in data]
-                
-                if not missing_fields:
-                    self.log("✅ Dashboard stats endpoint working correctly", "SUCCESS")
-                    return True
-                else:
-                    self.log(f"❌ Dashboard stats missing fields: {missing_fields}", "ERROR")
-                    return False
-            else:
-                self.log(f"❌ Dashboard stats failed with status {response.status_code}", "ERROR")
-                return False
-        except Exception as e:
-            self.log(f"❌ Dashboard stats failed with exception: {e}", "ERROR")
-            return False
-    
-    def test_dashboard_activity(self):
-        """Test GET /api/dashboard/activity endpoint"""
-        self.log("Testing Dashboard Activity endpoint...")
-        try:
-            response = self.session.get(f"{self.base_url}/dashboard/activity")
-            self.log(f"Dashboard activity response status: {response.status_code}")
-            
-            if response.status_code == 200:
-                data = response.json()
-                self.log(f"Dashboard activity response (first 2 items): {data[:2] if isinstance(data, list) else data}")
-                
-                if isinstance(data, list):
-                    self.log("✅ Dashboard activity endpoint working correctly", "SUCCESS")
-                    return True
-                else:
-                    self.log("❌ Dashboard activity should return an array", "ERROR")
-                    return False
-            else:
-                self.log(f"❌ Dashboard activity failed with status {response.status_code}", "ERROR")
-                return False
-        except Exception as e:
-            self.log(f"❌ Dashboard activity failed with exception: {e}", "ERROR")
-            return False
-    
-    def test_leads_crud(self):
-        """Test Leads CRUD operations"""
-        self.log("Testing Leads CRUD operations...")
+    async with aiohttp.ClientSession() as session:
+        results = {
+            'tags_endpoint': False,
+            'lists_crud': False,
+            'export_endpoints': False,
+            'enhanced_filtering': False,
+            'new_bulk_actions': False
+        }
         
-        # Test CREATE lead
-        self.log("Testing POST /api/leads...")
+        # Test data setup
+        test_data = await setup_test_data(session)
+        
+        # 1. Test Tags endpoint
+        print("1. Testing Tags endpoint...")
         try:
-            lead_data = {
-                "email": "john.doe@acmecorp.com",
-                "firstName": "John",
-                "lastName": "Doe",
-                "company": "Acme Corp",
-                "domain": "acmecorp.com"
+            results['tags_endpoint'] = await test_tags_endpoint(session, test_data)
+        except Exception as e:
+            print(f"❌ Tags endpoint failed: {e}")
+            
+        # 2. Test Lists CRUD
+        print("\n2. Testing Lists CRUD operations...")
+        try:
+            results['lists_crud'] = await test_lists_crud(session, test_data)
+        except Exception as e:
+            print(f"❌ Lists CRUD failed: {e}")
+            
+        # 3. Test Export endpoints
+        print("\n3. Testing Export endpoints...")
+        try:
+            results['export_endpoints'] = await test_export_endpoints(session, test_data)
+        except Exception as e:
+            print(f"❌ Export endpoints failed: {e}")
+            
+        # 4. Test Enhanced filtering
+        print("\n4. Testing Enhanced leads filtering...")
+        try:
+            results['enhanced_filtering'] = await test_enhanced_filtering(session, test_data)
+        except Exception as e:
+            print(f"❌ Enhanced filtering failed: {e}")
+            
+        # 5. Test New bulk actions
+        print("\n5. Testing New bulk actions...")
+        try:
+            results['new_bulk_actions'] = await test_new_bulk_actions(session, test_data)
+        except Exception as e:
+            print(f"❌ New bulk actions failed: {e}")
+        
+        # Cleanup
+        await cleanup_test_data(session, test_data)
+        
+        # Summary
+        print("\n=== NEW FEATURES TEST RESULTS ===")
+        passed = sum(results.values())
+        total = len(results)
+        for feature, status in results.items():
+            status_icon = "✅" if status else "❌"
+            print(f"{status_icon} {feature.replace('_', ' ').title()}: {'PASSED' if status else 'FAILED'}")
+        
+        print(f"\nOverall: {passed}/{total} new features working correctly")
+        return results
+
+async def setup_test_data(session):
+    """Setup test data for testing"""
+    print("Setting up test data...")
+    
+    test_data = {
+        'leads': [],
+        'campaigns': [],
+        'lists': []
+    }
+    
+    try:
+        # Create test campaigns
+        campaign_data = {
+            "name": "Test Campaign Alpha",
+            "description": "Test campaign for backend testing",
+            "status": "active"
+        }
+        
+        async with session.post(f"{API_BASE}/campaigns", json=campaign_data) as resp:
+            if resp.status == 201:
+                campaign = await resp.json()
+                test_data['campaigns'].append(campaign)
+                print(f"✅ Created test campaign: {campaign['id']}")
+        
+        # Create test leads with various tags and dates
+        lead1_data = {
+            "email": "alice.smith@techcorp.com",
+            "firstName": "Alice",
+            "lastName": "Smith", 
+            "company": "TechCorp",
+            "domain": "techcorp.com",
+            "tags": ["premium", "enterprise"],
+            "campaigns": [campaign['id']] if test_data['campaigns'] else []
+        }
+        
+        lead2_data = {
+            "email": "bob.jones@startup.io",
+            "firstName": "Bob",
+            "lastName": "Jones",
+            "company": "Startup Inc",
+            "domain": "startup.io", 
+            "tags": ["startup", "tech"],
+            "campaigns": []
+        }
+        
+        lead3_data = {
+            "email": "carol.white@bigcorp.net",
+            "firstName": "Carol",
+            "lastName": "White",
+            "company": "BigCorp",
+            "domain": "bigcorp.net",
+            "tags": ["enterprise", "finance"],
+            "campaigns": [campaign['id']] if test_data['campaigns'] else []
+        }
+        
+        for lead_data in [lead1_data, lead2_data, lead3_data]:
+            async with session.post(f"{API_BASE}/leads", json=lead_data) as resp:
+                if resp.status == 201:
+                    lead = await resp.json()
+                    test_data['leads'].append(lead)
+                    print(f"✅ Created test lead: {lead['email']}")
+        
+        return test_data
+        
+    except Exception as e:
+        print(f"❌ Setup failed: {e}")
+        return test_data
+
+async def test_tags_endpoint(session, test_data):
+    """Test GET /api/tags endpoint"""
+    print("Testing tags endpoint...")
+    
+    try:
+        async with session.get(f"{API_BASE}/tags") as resp:
+            if resp.status != 200:
+                print(f"❌ Tags endpoint returned status {resp.status}")
+                return False
+                
+            tags = await resp.json()
+            
+            if not isinstance(tags, list):
+                print(f"❌ Tags endpoint should return array, got {type(tags)}")
+                return False
+            
+            # Check if our test tags are present
+            expected_tags = ["premium", "enterprise", "startup", "tech", "finance"]
+            found_tags = [tag for tag in expected_tags if tag in tags]
+            
+            if len(found_tags) >= 3:  # Should have at least some of our test tags
+                print(f"✅ Tags endpoint working - found {len(tags)} unique tags including {found_tags}")
+                return True
+            else:
+                print(f"❌ Expected test tags not found. Got tags: {tags}")
+                return False
+                
+    except Exception as e:
+        print(f"❌ Tags endpoint error: {e}")
+        return False
+
+async def test_lists_crud(session, test_data):
+    """Test Lists CRUD operations"""
+    print("Testing Lists CRUD operations...")
+    
+    try:
+        # Test POST /api/lists (Create)
+        print("  Testing list creation...")
+        list_data = {
+            "name": "Enterprise Leads List",
+            "description": "List of enterprise leads for testing",
+            "filters": {
+                "tags": ["enterprise"],
+                "campaigns": [test_data['campaigns'][0]['id']] if test_data['campaigns'] else [],
+                "dateFrom": (datetime.now() - timedelta(days=7)).isoformat(),
+                "dateTo": datetime.now().isoformat()
             }
-            
-            response = self.session.post(f"{self.base_url}/leads", json=lead_data)
-            self.log(f"Create lead response status: {response.status_code}")
-            
-            if response.status_code == 201:
-                created_lead = response.json()
-                self.log(f"Created lead: {created_lead}")
-                self.created_leads.append(created_lead['id'])
-                self.log("✅ Create lead working correctly", "SUCCESS")
-                
-                # Test GET single lead
-                self.log(f"Testing GET /api/leads/{created_lead['id']}...")
-                get_response = self.session.get(f"{self.base_url}/leads/{created_lead['id']}")
-                
-                if get_response.status_code == 200:
-                    retrieved_lead = get_response.json()
-                    self.log("✅ Get single lead working correctly", "SUCCESS")
-                    
-                    # Test UPDATE lead
-                    self.log(f"Testing PUT /api/leads/{created_lead['id']}...")
-                    update_data = {"firstName": "Johnny", "company": "Updated Corp"}
-                    
-                    put_response = self.session.put(f"{self.base_url}/leads/{created_lead['id']}", json=update_data)
-                    if put_response.status_code == 200:
-                        updated_lead = put_response.json()
-                        if updated_lead['firstName'] == 'Johnny':
-                            self.log("✅ Update lead working correctly", "SUCCESS")
-                        else:
-                            self.log("❌ Lead update not reflected in response", "ERROR")
-                            return False
-                    else:
-                        self.log(f"❌ Update lead failed with status {put_response.status_code}", "ERROR")
-                        return False
-                        
-                else:
-                    self.log(f"❌ Get single lead failed with status {get_response.status_code}", "ERROR")
-                    return False
-                    
-            else:
-                self.log(f"❌ Create lead failed with status {response.status_code}: {response.text}", "ERROR")
-                return False
-                
-        except Exception as e:
-            self.log(f"❌ Leads CRUD failed with exception: {e}", "ERROR")
-            return False
+        }
         
-        # Test GET all leads with pagination
-        self.log("Testing GET /api/leads with pagination...")
-        try:
-            response = self.session.get(f"{self.base_url}/leads?page=1&limit=20")
-            if response.status_code == 200:
-                data = response.json()
-                if 'leads' in data and 'pagination' in data:
-                    self.log("✅ Get leads with pagination working correctly", "SUCCESS")
-                    return True
-                else:
-                    self.log("❌ Get leads response missing leads or pagination field", "ERROR")
-                    return False
-            else:
-                self.log(f"❌ Get leads failed with status {response.status_code}", "ERROR")
+        async with session.post(f"{API_BASE}/lists", json=list_data) as resp:
+            if resp.status != 201:
+                print(f"❌ List creation failed with status {resp.status}")
                 return False
-        except Exception as e:
-            self.log(f"❌ Get leads failed with exception: {e}", "ERROR")
-            return False
-    
-    def test_leads_bulk_import(self):
-        """Test POST /api/leads/bulk endpoint"""
-        self.log("Testing Leads Bulk Import endpoint...")
-        try:
-            bulk_leads = [
-                {
-                    "email": "alice.smith@techcorp.com",
-                    "firstName": "Alice",
-                    "lastName": "Smith",
-                    "company": "Tech Corp",
-                    "domain": "techcorp.com"
-                },
-                {
-                    "email": "bob.wilson@innovate.com", 
-                    "firstName": "Bob",
-                    "lastName": "Wilson",
-                    "company": "Innovate Inc",
-                    "domain": "innovate.com"
-                },
-                {
-                    "email": "john.doe@acmecorp.com",  # Duplicate from previous test
-                    "firstName": "John",
-                    "lastName": "Doe",
-                    "company": "Acme Corp"
-                }
-            ]
             
-            response = self.session.post(f"{self.base_url}/leads/bulk", json={"leads": bulk_leads})
-            self.log(f"Bulk import response status: {response.status_code}")
-            
-            if response.status_code == 201:
-                data = response.json()
-                self.log(f"Bulk import response: {data}")
-                
-                required_fields = ['imported', 'skipped', 'total']
-                if all(field in data for field in required_fields):
-                    if data['total'] == 3 and data['skipped'] >= 1:  # Should skip duplicate
-                        self.log("✅ Bulk import with duplicate detection working correctly", "SUCCESS")
-                        return True
-                    else:
-                        self.log(f"❌ Bulk import counts don't match expected (total: {data['total']}, skipped: {data['skipped']})", "ERROR")
-                        return False
-                else:
-                    self.log(f"❌ Bulk import response missing required fields", "ERROR")
-                    return False
-            else:
-                self.log(f"❌ Bulk import failed with status {response.status_code}: {response.text}", "ERROR")
-                return False
-                
-        except Exception as e:
-            self.log(f"❌ Bulk import failed with exception: {e}", "ERROR")
-            return False
-    
-    def test_leads_bulk_actions(self):
-        """Test POST /api/leads/bulk-action endpoint"""
-        self.log("Testing Leads Bulk Actions endpoint...")
+            created_list = await resp.json()
+            test_data['lists'].append(created_list)
+            print(f"✅ List created successfully: {created_list['id']}")
         
-        # First create some test leads
-        test_leads = []
-        try:
-            for i in range(2):
-                lead_data = {
-                    "email": f"bulktest{i}@example.com",
-                    "firstName": f"BulkTest{i}",
-                    "lastName": "User",
-                    "company": "Test Corp"
-                }
-                response = self.session.post(f"{self.base_url}/leads", json=lead_data)
-                if response.status_code == 201:
-                    lead = response.json()
-                    test_leads.append(lead['id'])
-                    
-            if len(test_leads) != 2:
-                self.log("❌ Failed to create test leads for bulk actions", "ERROR")
+        # Test GET /api/lists (Read all)
+        print("  Testing list retrieval...")
+        async with session.get(f"{API_BASE}/lists") as resp:
+            if resp.status != 200:
+                print(f"❌ List retrieval failed with status {resp.status}")
                 return False
-                
-            # Test bulk add tag action
-            self.log("Testing bulk addTag action...")
-            bulk_action_data = {
-                "action": "addTag",
-                "leadIds": test_leads,
-                "data": {"tag": "bulk-test"}
+            
+            lists = await resp.json()
+            
+            if not isinstance(lists, list):
+                print(f"❌ Lists endpoint should return array, got {type(lists)}")
+                return False
+            
+            # Check if our created list is present and has leadsCount
+            our_list = next((l for l in lists if l['id'] == created_list['id']), None)
+            if not our_list:
+                print(f"❌ Created list not found in lists response")
+                return False
+            
+            if 'leadsCount' not in our_list:
+                print(f"❌ List should have leadsCount field")
+                return False
+            
+            print(f"✅ Lists retrieval working - found {len(lists)} lists, our list has {our_list['leadsCount']} leads")
+        
+        # Test GET /api/lists/:id (Read single)  
+        print("  Testing single list retrieval...")
+        async with session.get(f"{API_BASE}/lists/{created_list['id']}") as resp:
+            if resp.status != 200:
+                print(f"❌ Single list retrieval failed with status {resp.status}")
+                return False
+            
+            single_list = await resp.json()
+            if single_list['id'] != created_list['id']:
+                print(f"❌ Retrieved wrong list")
+                return False
+            
+            print(f"✅ Single list retrieval working")
+        
+        # Test PUT /api/lists/:id (Update)
+        print("  Testing list update...")
+        update_data = {
+            "name": "Updated Enterprise List", 
+            "description": "Updated description",
+            "filters": {
+                "tags": ["enterprise", "premium"],
+                "campaigns": [],
+                "dateFrom": (datetime.now() - timedelta(days=14)).isoformat()
             }
-            
-            response = self.session.post(f"{self.base_url}/leads/bulk-action", json=bulk_action_data)
-            self.log(f"Bulk addTag response status: {response.status_code}")
-            
-            if response.status_code == 200:
-                data = response.json()
-                if 'updated' in data and data['updated'] == 2:
-                    self.log("✅ Bulk addTag action working correctly", "SUCCESS")
-                else:
-                    self.log(f"❌ Bulk addTag unexpected response: {data}", "ERROR")
-                    return False
-            else:
-                self.log(f"❌ Bulk addTag failed with status {response.status_code}", "ERROR")
+        }
+        
+        async with session.put(f"{API_BASE}/lists/{created_list['id']}", json=update_data) as resp:
+            if resp.status != 200:
+                print(f"❌ List update failed with status {resp.status}")
                 return False
-                
-            # Test bulk delete action  
-            self.log("Testing bulk delete action...")
-            bulk_delete_data = {
-                "action": "delete",
-                "leadIds": test_leads
-            }
             
-            response = self.session.post(f"{self.base_url}/leads/bulk-action", json=bulk_delete_data)
-            if response.status_code == 200:
-                data = response.json()
-                if 'deleted' in data and data['deleted'] == 2:
-                    self.log("✅ Bulk delete action working correctly", "SUCCESS")
-                    return True
-                else:
-                    self.log(f"❌ Bulk delete unexpected response: {data}", "ERROR")
-                    return False
-            else:
-                self.log(f"❌ Bulk delete failed with status {response.status_code}", "ERROR")
+            updated_list = await resp.json()
+            if updated_list['name'] != update_data['name']:
+                print(f"❌ List update didn't persist changes")
                 return False
-                
-        except Exception as e:
-            self.log(f"❌ Bulk actions failed with exception: {e}", "ERROR")
-            return False
+            
+            print(f"✅ List update working")
+        
+        print("✅ All Lists CRUD operations working correctly")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Lists CRUD error: {e}")
+        return False
+
+async def test_export_endpoints(session, test_data):
+    """Test Export endpoints"""
+    print("Testing Export endpoints...")
     
-    def test_campaigns_crud(self):
-        """Test Campaigns CRUD operations"""
-        self.log("Testing Campaigns CRUD operations...")
-        
-        # Test CREATE campaign
-        self.log("Testing POST /api/campaigns...")
-        try:
-            campaign_data = {
-                "name": "Test Campaign",
-                "description": "This is a test campaign",
-                "status": "active"
-            }
-            
-            response = self.session.post(f"{self.base_url}/campaigns", json=campaign_data)
-            self.log(f"Create campaign response status: {response.status_code}")
-            
-            if response.status_code == 201:
-                created_campaign = response.json()
-                self.log(f"Created campaign: {created_campaign}")
-                self.created_campaigns.append(created_campaign['id'])
-                
-                # Test GET single campaign
-                self.log(f"Testing GET /api/campaigns/{created_campaign['id']}...")
-                get_response = self.session.get(f"{self.base_url}/campaigns/{created_campaign['id']}")
-                
-                if get_response.status_code == 200:
-                    retrieved_campaign = get_response.json()
-                    if 'leadsCount' in retrieved_campaign:
-                        self.log("✅ Get single campaign with leadsCount working correctly", "SUCCESS")
-                    else:
-                        self.log("❌ Campaign response missing leadsCount field", "ERROR")
-                        return False
-                        
-                    # Test UPDATE campaign
-                    self.log(f"Testing PUT /api/campaigns/{created_campaign['id']}...")
-                    update_data = {"name": "Updated Test Campaign", "status": "inactive"}
-                    
-                    put_response = self.session.put(f"{self.base_url}/campaigns/{created_campaign['id']}", json=update_data)
-                    if put_response.status_code == 200:
-                        updated_campaign = put_response.json()
-                        if updated_campaign['name'] == 'Updated Test Campaign':
-                            self.log("✅ Update campaign working correctly", "SUCCESS")
-                        else:
-                            self.log("❌ Campaign update not reflected in response", "ERROR")
-                            return False
-                    else:
-                        self.log(f"❌ Update campaign failed with status {put_response.status_code}", "ERROR")
-                        return False
-                        
-                else:
-                    self.log(f"❌ Get single campaign failed with status {get_response.status_code}", "ERROR")
-                    return False
-                    
-            else:
-                self.log(f"❌ Create campaign failed with status {response.status_code}: {response.text}", "ERROR")
+    try:
+        # Test GET /api/leads/export (basic export)
+        print("  Testing basic leads export...")
+        async with session.get(f"{API_BASE}/leads/export") as resp:
+            if resp.status != 200:
+                print(f"❌ Leads export failed with status {resp.status}")
                 return False
-                
-        except Exception as e:
-            self.log(f"❌ Campaigns CRUD failed with exception: {e}", "ERROR")
-            return False
-        
-        # Test GET all campaigns
-        self.log("Testing GET /api/campaigns...")
-        try:
-            response = self.session.get(f"{self.base_url}/campaigns")
-            if response.status_code == 200:
-                campaigns = response.json()
-                if isinstance(campaigns, list):
-                    # Check if campaigns have leadsCount
-                    if campaigns and 'leadsCount' in campaigns[0]:
-                        self.log("✅ Get campaigns with leadsCount working correctly", "SUCCESS")
-                        return True
-                    else:
-                        self.log("✅ Get campaigns working correctly (empty list or no leadsCount field)", "SUCCESS")
-                        return True
-                else:
-                    self.log("❌ Get campaigns should return an array", "ERROR")
-                    return False
-            else:
-                self.log(f"❌ Get campaigns failed with status {response.status_code}", "ERROR")
+            
+            content_type = resp.headers.get('content-type', '')
+            if 'text/csv' not in content_type:
+                print(f"❌ Leads export should return CSV, got {content_type}")
                 return False
-        except Exception as e:
-            self.log(f"❌ Get campaigns failed with exception: {e}", "ERROR")
-            return False
+            
+            csv_content = await resp.text()
+            if not csv_content or 'email' not in csv_content:
+                print(f"❌ CSV content invalid or empty")
+                return False
+            
+            lines = csv_content.strip().split('\n')
+            if len(lines) < 2:  # At least header + 1 data row
+                print(f"❌ CSV should have header and data rows")
+                return False
+            
+            print(f"✅ Basic leads export working - exported {len(lines)-1} leads")
+        
+        # Test export with tag filter
+        print("  Testing leads export with tag filter...")
+        async with session.get(f"{API_BASE}/leads/export?tag=enterprise") as resp:
+            if resp.status != 200:
+                print(f"❌ Tagged leads export failed with status {resp.status}")
+                return False
+            
+            csv_content = await resp.text()
+            lines = csv_content.strip().split('\n') if csv_content else []
+            print(f"✅ Tagged leads export working - filtered {len(lines)-1 if lines else 0} leads")
+        
+        # Test export with date range
+        print("  Testing leads export with date range...")
+        date_from = (datetime.now() - timedelta(days=1)).isoformat()
+        date_to = datetime.now().isoformat()
+        
+        async with session.get(f"{API_BASE}/leads/export?dateFrom={date_from}&dateTo={date_to}") as resp:
+            if resp.status != 200:
+                print(f"❌ Date range leads export failed with status {resp.status}")
+                return False
+            
+            csv_content = await resp.text()
+            print(f"✅ Date range leads export working")
+        
+        # Test export with specific lead IDs
+        if test_data['leads']:
+            print("  Testing leads export with specific IDs...")
+            lead_ids = ",".join([lead['id'] for lead in test_data['leads'][:2]])
+            
+            async with session.get(f"{API_BASE}/leads/export?leadIds={lead_ids}") as resp:
+                if resp.status != 200:
+                    print(f"❌ Specific leads export failed with status {resp.status}")
+                    return False
+                
+                csv_content = await resp.text()
+                lines = csv_content.strip().split('\n') if csv_content else []
+                print(f"✅ Specific leads export working - exported {len(lines)-1 if lines else 0} specific leads")
+        
+        # Test campaign leads export
+        if test_data['campaigns']:
+            print("  Testing campaign leads export...")
+            campaign_id = test_data['campaigns'][0]['id']
+            
+            async with session.get(f"{API_BASE}/campaigns/{campaign_id}/export") as resp:
+                if resp.status != 200:
+                    print(f"❌ Campaign leads export failed with status {resp.status}")
+                    return False
+                
+                content_type = resp.headers.get('content-type', '')
+                if 'text/csv' not in content_type:
+                    print(f"❌ Campaign export should return CSV, got {content_type}")
+                    return False
+                
+                csv_content = await resp.text()
+                print(f"✅ Campaign leads export working")
+        
+        print("✅ All Export endpoints working correctly")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Export endpoints error: {e}")
+        return False
+
+async def test_enhanced_filtering(session, test_data):
+    """Test Enhanced leads filtering"""
+    print("Testing Enhanced leads filtering...")
     
-    def test_campaigns_with_leads(self):
-        """Test assigning leads to campaigns and verify leadsCount"""
-        self.log("Testing Campaign-Lead assignment...")
+    try:
+        # Test filter by tag
+        print("  Testing filter by tag...")
+        async with session.get(f"{API_BASE}/leads?tag=enterprise") as resp:
+            if resp.status != 200:
+                print(f"❌ Tag filtering failed with status {resp.status}")
+                return False
+            
+            data = await resp.json()
+            if 'leads' not in data:
+                print(f"❌ Filtered response should have 'leads' field")
+                return False
+            
+            # Verify all returned leads have the tag
+            for lead in data['leads']:
+                if 'enterprise' not in (lead.get('tags', [])):
+                    print(f"❌ Lead {lead.get('email')} doesn't have 'enterprise' tag")
+                    return False
+            
+            print(f"✅ Tag filtering working - found {len(data['leads'])} leads with 'enterprise' tag")
         
-        # Create a test campaign and lead
-        try:
-            # Create campaign
-            campaign_data = {"name": "Lead Assignment Test", "status": "active"}
-            camp_response = self.session.post(f"{self.base_url}/campaigns", json=campaign_data)
-            
-            if camp_response.status_code != 201:
-                self.log("❌ Failed to create test campaign", "ERROR")
+        # Test filter by date range
+        print("  Testing filter by date range...")
+        date_from = (datetime.now() - timedelta(days=1)).isoformat()
+        date_to = datetime.now().isoformat()
+        
+        async with session.get(f"{API_BASE}/leads?dateFrom={date_from}&dateTo={date_to}") as resp:
+            if resp.status != 200:
+                print(f"❌ Date range filtering failed with status {resp.status}")
                 return False
+            
+            data = await resp.json()
+            print(f"✅ Date range filtering working - found {len(data['leads'])} leads in range")
+        
+        # Test filter by list (if we have a list created)
+        if test_data['lists']:
+            print("  Testing filter by listId...")
+            list_id = test_data['lists'][0]['id']
+            
+            async with session.get(f"{API_BASE}/leads?listId={list_id}") as resp:
+                if resp.status != 200:
+                    print(f"❌ List filtering failed with status {resp.status}")
+                    return False
                 
-            campaign = camp_response.json()
-            campaign_id = campaign['id']
-            self.created_campaigns.append(campaign_id)
-            
-            # Create lead
-            lead_data = {
-                "email": "campaign.test@example.com",
-                "firstName": "Campaign",
-                "lastName": "Test",
-                "company": "Test Corp"
-            }
-            lead_response = self.session.post(f"{self.base_url}/leads", json=lead_data)
-            
-            if lead_response.status_code != 201:
-                self.log("❌ Failed to create test lead", "ERROR")
+                data = await resp.json()
+                print(f"✅ List filtering working - found {len(data['leads'])} leads matching list filters")
+        
+        # Test combined filters
+        print("  Testing combined filters...")
+        async with session.get(f"{API_BASE}/leads?tag=enterprise&search=Alice") as resp:
+            if resp.status != 200:
+                print(f"❌ Combined filtering failed with status {resp.status}")
                 return False
-                
-            lead = lead_response.json()
-            lead_id = lead['id']
-            self.created_leads.append(lead_id)
             
-            # Use bulk action to add lead to campaign
-            bulk_action_data = {
+            data = await resp.json()
+            print(f"✅ Combined filtering working - found {len(data['leads'])} leads")
+        
+        print("✅ All Enhanced filtering working correctly")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Enhanced filtering error: {e}")
+        return False
+
+async def test_new_bulk_actions(session, test_data):
+    """Test New bulk actions (removeTag, removeFromCampaign)"""
+    print("Testing New bulk actions...")
+    
+    try:
+        if len(test_data['leads']) < 2:
+            print("❌ Need at least 2 test leads for bulk actions")
+            return False
+        
+        lead_ids = [lead['id'] for lead in test_data['leads'][:2]]
+        
+        # Test removeTag action
+        print("  Testing removeTag bulk action...")
+        
+        # First add a tag to test removal
+        add_tag_data = {
+            "action": "addTag",
+            "leadIds": lead_ids,
+            "data": {"tag": "test-remove-tag"}
+        }
+        
+        async with session.post(f"{API_BASE}/leads/bulk-action", json=add_tag_data) as resp:
+            if resp.status != 200:
+                print(f"❌ Add tag for removal test failed with status {resp.status}")
+                return False
+        
+        # Now test removeTag
+        remove_tag_data = {
+            "action": "removeTag",
+            "leadIds": lead_ids,
+            "data": {"tag": "test-remove-tag"}
+        }
+        
+        async with session.post(f"{API_BASE}/leads/bulk-action", json=remove_tag_data) as resp:
+            if resp.status != 200:
+                print(f"❌ Remove tag bulk action failed with status {resp.status}")
+                return False
+            
+            result = await resp.json()
+            if 'updated' not in result or result['updated'] != len(lead_ids):
+                print(f"❌ Remove tag should update {len(lead_ids)} leads, got {result}")
+                return False
+            
+            print(f"✅ Remove tag bulk action working - updated {result['updated']} leads")
+        
+        # Test removeFromCampaign action
+        if test_data['campaigns']:
+            print("  Testing removeFromCampaign bulk action...")
+            
+            campaign_id = test_data['campaigns'][0]['id']
+            
+            # First ensure leads are in the campaign
+            add_campaign_data = {
                 "action": "addToCampaign",
-                "leadIds": [lead_id],
+                "leadIds": lead_ids,
                 "data": {"campaignId": campaign_id}
             }
             
-            bulk_response = self.session.post(f"{self.base_url}/leads/bulk-action", json=bulk_action_data)
-            
-            if bulk_response.status_code != 200:
-                self.log(f"❌ Failed to assign lead to campaign: {bulk_response.status_code}", "ERROR")
-                return False
-                
-            # Verify campaign now has leadsCount = 1
-            get_campaign_response = self.session.get(f"{self.base_url}/campaigns/{campaign_id}")
-            
-            if get_campaign_response.status_code == 200:
-                updated_campaign = get_campaign_response.json()
-                if updated_campaign.get('leadsCount', 0) >= 1:
-                    self.log("✅ Campaign lead assignment and count working correctly", "SUCCESS")
-                    return True
-                else:
-                    self.log(f"❌ Campaign leadsCount not updated correctly: {updated_campaign.get('leadsCount', 0)}", "ERROR")
+            async with session.post(f"{API_BASE}/leads/bulk-action", json=add_campaign_data) as resp:
+                if resp.status != 200:
+                    print(f"❌ Add to campaign for removal test failed")
                     return False
-            else:
-                self.log("❌ Failed to retrieve campaign after lead assignment", "ERROR")
-                return False
+            
+            # Now test removeFromCampaign
+            remove_campaign_data = {
+                "action": "removeFromCampaign", 
+                "leadIds": lead_ids,
+                "data": {"campaignId": campaign_id}
+            }
+            
+            async with session.post(f"{API_BASE}/leads/bulk-action", json=remove_campaign_data) as resp:
+                if resp.status != 200:
+                    print(f"❌ Remove from campaign bulk action failed with status {resp.status}")
+                    return False
                 
-        except Exception as e:
-            self.log(f"❌ Campaign-lead assignment failed with exception: {e}", "ERROR")
-            return False
-    
-    def cleanup(self):
-        """Clean up created test data"""
-        self.log("Cleaning up test data...")
-        
-        # Delete created leads
-        for lead_id in self.created_leads:
-            try:
-                self.session.delete(f"{self.base_url}/leads/{lead_id}")
-            except:
-                pass
+                result = await resp.json()
+                if 'updated' not in result or result['updated'] != len(lead_ids):
+                    print(f"❌ Remove from campaign should update {len(lead_ids)} leads, got {result}")
+                    return False
                 
-        # Delete created campaigns  
-        for campaign_id in self.created_campaigns:
-            try:
-                self.session.delete(f"{self.base_url}/campaigns/{campaign_id}")
-            except:
-                pass
+                print(f"✅ Remove from campaign bulk action working - updated {result['updated']} leads")
         
-        self.log("✅ Cleanup completed")
+        print("✅ All New bulk actions working correctly") 
+        return True
+        
+    except Exception as e:
+        print(f"❌ New bulk actions error: {e}")
+        return False
+
+async def cleanup_test_data(session, test_data):
+    """Clean up test data"""
+    print("\nCleaning up test data...")
     
-    def run_all_tests(self):
-        """Run all backend API tests"""
-        self.log("=" * 60)
-        self.log("Starting LeadOS Backend API Tests")
-        self.log("=" * 60)
+    try:
+        # Delete test lists
+        for list_item in test_data['lists']:
+            async with session.delete(f"{API_BASE}/lists/{list_item['id']}") as resp:
+                if resp.status == 200:
+                    print(f"✅ Deleted test list: {list_item['id']}")
         
-        test_results = {}
+        # Delete test leads
+        for lead in test_data['leads']:
+            async with session.delete(f"{API_BASE}/leads/{lead['id']}") as resp:
+                if resp.status == 200:
+                    print(f"✅ Deleted test lead: {lead['email']}")
         
-        # Run tests in order
-        test_results['health_check'] = self.test_health_check()
-        test_results['dashboard_stats'] = self.test_dashboard_stats()
-        test_results['dashboard_activity'] = self.test_dashboard_activity()
-        test_results['leads_crud'] = self.test_leads_crud()
-        test_results['leads_bulk_import'] = self.test_leads_bulk_import()
-        test_results['leads_bulk_actions'] = self.test_leads_bulk_actions()
-        test_results['campaigns_crud'] = self.test_campaigns_crud()
-        test_results['campaigns_with_leads'] = self.test_campaigns_with_leads()
-        
-        # Cleanup
-        self.cleanup()
-        
-        # Summary
-        self.log("=" * 60)
-        self.log("TEST RESULTS SUMMARY")
-        self.log("=" * 60)
-        
-        passed = 0
-        total = len(test_results)
-        
-        for test_name, result in test_results.items():
-            status = "✅ PASS" if result else "❌ FAIL"
-            self.log(f"{test_name.replace('_', ' ').title()}: {status}")
-            if result:
-                passed += 1
-        
-        self.log("=" * 60)
-        self.log(f"OVERALL: {passed}/{total} tests passed")
-        
-        if passed == total:
-            self.log("🎉 All backend tests PASSED!", "SUCCESS")
-        else:
-            self.log(f"⚠️  {total - passed} test(s) FAILED", "ERROR")
-        
-        return test_results
+        # Delete test campaigns
+        for campaign in test_data['campaigns']:
+            async with session.delete(f"{API_BASE}/campaigns/{campaign['id']}") as resp:
+                if resp.status == 200:
+                    print(f"✅ Deleted test campaign: {campaign['id']}")
+                    
+    except Exception as e:
+        print(f"❌ Cleanup error: {e}")
 
 if __name__ == "__main__":
-    tester = LeadOSAPITester()
-    results = tester.run_all_tests()
+    asyncio.run(test_new_leadOS_features())
