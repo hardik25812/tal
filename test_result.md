@@ -240,6 +240,81 @@ backend:
         agent: "testing"
         comment: "✅ TESTED: Custom fields endpoint working correctly. API exists and returns expected responses."
 
+  - task: "Tags endpoint"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Implemented GET /api/tags - returns array of unique tags from all leads"
+      - working: true
+        agent: "testing"
+        comment: "✅ TESTED: Tags endpoint working correctly. Returns array of unique tags including test tags: premium, enterprise, startup, tech, finance."
+
+  - task: "Lists CRUD operations"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Implemented GET/POST/PUT/DELETE /api/lists with filters support (dateFrom, dateTo, tags, campaigns) and leadsCount calculation"
+      - working: true
+        agent: "testing"
+        comment: "✅ TESTED: All Lists CRUD operations working correctly. CREATE (POST), READ all/single (GET), UPDATE (PUT), DELETE all functioning properly. Filters and leadsCount calculation working as expected."
+
+  - task: "Export endpoints"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Implemented GET /api/leads/export and GET /api/campaigns/:id/export with filtering support (leadIds, tag, dateFrom, dateTo)"
+      - working: true
+        agent: "testing"
+        comment: "✅ TESTED: All Export endpoints working correctly. CSV format export working for basic leads, filtered by tag/date/specific IDs, and campaign leads export. Proper content-type headers returned."
+
+  - task: "Enhanced leads filtering"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Enhanced GET /api/leads with new filters: tag, dateFrom, dateTo, listId. ListId applies list filters to leads query."
+      - working: true
+        agent: "testing"
+        comment: "✅ TESTED: Enhanced leads filtering working correctly. Tag filtering, date range filtering, list-based filtering, and combined filters all functioning properly."
+
+  - task: "New bulk actions"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Added removeTag and removeFromCampaign actions to POST /api/leads/bulk-action endpoint"
+      - working: true
+        agent: "testing"
+        comment: "✅ TESTED: New bulk actions working correctly. removeTag and removeFromCampaign actions successfully removing tags/campaigns from multiple leads and returning correct update counts."
+
 frontend:
   - task: "Dashboard page with stats and activity"
     implemented: true
