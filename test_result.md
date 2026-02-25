@@ -137,15 +137,18 @@ backend:
 
   - task: "Dashboard activity endpoint"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/app/api/[[...path]]/route.js"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
         comment: "Implemented GET /api/dashboard/activity - returns recent 10 activities"
+      - working: true
+        agent: "testing"
+        comment: "✅ TESTED: Dashboard activity endpoint working correctly. Returns activities array as expected."
 
   - task: "Leads CRUD operations"
     implemented: true
