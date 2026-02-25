@@ -401,6 +401,11 @@ test_plan:
     - "Leads CRUD operations"
     - "Leads bulk import endpoint"
     - "Campaigns CRUD operations"
+    - "Tags endpoint"
+    - "Lists CRUD operations"
+    - "Export endpoints"
+    - "Enhanced leads filtering"
+    - "New bulk actions"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -412,3 +417,5 @@ agent_communication:
     message: "Added new features: Lists module, Tags endpoint, Export endpoints, enhanced filtering. Please test: GET /api/lists, POST /api/lists, GET /api/tags, GET /api/leads/export, GET /api/campaigns/:id/export"
   - agent: "testing"
     message: "✅ BACKEND TESTING COMPLETE: All 8 backend API endpoints tested successfully. All high priority endpoints (health, dashboard stats, leads CRUD, bulk import, campaigns CRUD) are working correctly. All APIs return proper response formats, handle CRUD operations, and manage data relationships (campaign-lead assignments, duplicate detection, etc.) as expected. Backend is ready for production use."
+  - agent: "testing"
+    message: "✅ NEW FEATURES TESTING COMPLETE: All 5 NEW backend features tested successfully. Tags endpoint returns unique tags array. Lists CRUD supports full operations with filters (dateFrom, dateTo, tags, campaigns) and leadsCount calculation. Export endpoints support CSV export for leads (with filtering) and campaign leads with proper headers. Enhanced filtering works for tag, dateFrom, dateTo, listId parameters. New bulk actions (removeTag, removeFromCampaign) working correctly. All new APIs are production-ready."
