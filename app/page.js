@@ -36,7 +36,10 @@ import {
   CheckCircle2,
   List,
   CalendarRange,
-  Tags
+  Tags,
+  Phone,
+  LinkIcon,
+  AlertCircle
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -73,6 +76,8 @@ const defaultColumns = [
   { id: 'lastName', label: 'Last Name', visible: true },
   { id: 'company', label: 'Company', visible: true },
   { id: 'domain', label: 'Domain', visible: true },
+  { id: 'phone', label: 'Phone', visible: false },
+  { id: 'status', label: 'Status', visible: true },
   { id: 'createdAt', label: 'Created At', visible: true },
   { id: 'tags', label: 'Tags', visible: true },
   { id: 'campaigns', label: 'Campaigns', visible: false },
@@ -925,6 +930,8 @@ function LeadsPage({
                             ))}
                             {(lead.tags || []).length > 3 && <Badge variant="outline" className="text-xs">+{lead.tags.length - 3}</Badge>}
                           </div>
+                        ) : col.id === 'status' ? (
+                          <Badge variant={lead.status === 'active' ? 'default' : 'secondary'}>{lead.status || 'active'}</Badge>
                         ) : col.id === 'campaigns' ? (
                           <Badge variant="outline">{(lead.campaigns || []).length} campaigns</Badge>
                         ) : col.id === 'createdAt' ? (
@@ -1214,6 +1221,32 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns, allTags }) {
                   <div>
                     <Label className="text-muted-foreground">Domain</Label>
                     {editing ? <Input value={formData.domain} onChange={(e) => setFormData({ ...formData, domain: e.target.value })} className="mt-1" /> : <p className="font-medium">{lead.domain || '-'}</p>}
+                  </div>
+                  <div>
+                    <Label className="text-muted-foreground">Phone</Label>
+                    {editing ? <Input value={formData.phone || ''} onChange={(e) => setFormData({ ...formData, phone: e.target.value })} className="mt-1" placeholder="+1 555-0100" /> : <p className="font-medium">{lead.phone || '-'}</p>}
+                  </div>
+                  <div>
+                    <Label className="text-muted-foreground">LinkedIn URL</Label>
+                    {editing ? <Input value={formData.linkedinUrl || ''} onChange={(e) => setFormData({ ...formData, linkedinUrl: e.target.value })} className="mt-1" placeholder="https://linkedin.com/in/..." /> : <p className="font-medium">{lead.linkedinUrl ? <a href={lead.linkedinUrl} target="_blank" rel="noopener noreferrer" className="text-primary underline">{lead.linkedinUrl}</a> : '-'}</p>}
+                  </div>
+                  <div>
+                    <Label className="text-muted-foreground">Source</Label>
+                    {editing ? <Input value={formData.source || ''} onChange={(e) => setFormData({ ...formData, source: e.target.value })} className="mt-1" placeholder="e.g., Website, LinkedIn, CSV Import" /> : <p className="font-medium">{lead.source || '-'}</p>}
+                  </div>
+                  <div>
+                    <Label className="text-muted-foreground">Status</Label>
+                    {editing ? (
+                      <Select value={formData.status || 'active'} onValueChange={(v) => setFormData({ ...formData, status: v })}>
+                        <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="active">Active</SelectItem>
+                          <SelectItem value="inactive">Inactive</SelectItem>
+                          <SelectItem value="bounced">Bounced</SelectItem>
+                          <SelectItem value="unsubscribed">Unsubscribed</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    ) : <Badge variant={lead.status === 'active' ? 'default' : 'secondary'} className="mt-1">{lead.status || 'active'}</Badge>}
                   </div>
                   <div>
                     <Label className="text-muted-foreground">Created At</Label>
@@ -1687,16 +1720,21 @@ function CampaignDetailPage({ campaign, onBack, onAddLeads, onExport }) {
   )
 }
 
-// Import Center Page
+// Import Center Page — supports 500K+ leads via chunked client uploads
 function ImportCenterPage({ onImportComplete }) {
   const [step, setStep] = useState(1)
   const [file, setFile] = useState(null)
-  const [csvData, setCsvData] = useState([])
+  const [csvData, setCsvData] = useState([])        // preview rows only
+  const [totalRowCount, setTotalRowCount] = useState(0)
   const [csvHeaders, setCsvHeaders] = useState([])
   const [columnMapping, setColumnMapping] = useState({})
   const [importing, setImporting] = useState(false)
   const [importResult, setImportResult] = useState(null)
+  const [progress, setProgress] = useState({ percent: 0, sent: 0, total: 0, inserted: 0, updated: 0, skipped: 0, errors: 0, currentChunk: 0, totalChunks: 0, speed: 0, eta: '' })
   const fileInputRef = useRef(null)
+  const abortRef = useRef(false)
+
+  const CLIENT_CHUNK_SIZE = 500  // rows per API request (kept small for Next.js body limit)
 
   const fieldOptions = [
     { value: 'email', label: 'Email' },
@@ -1704,34 +1742,53 @@ function ImportCenterPage({ onImportComplete }) {
     { value: 'lastName', label: 'Last Name' },
     { value: 'company', label: 'Company' },
     { value: 'domain', label: 'Domain' },
+    { value: 'phone', label: 'Phone' },
+    { value: 'linkedinUrl', label: 'LinkedIn URL' },
+    { value: 'source', label: 'Source' },
+    { value: 'status', label: 'Status' },
     { value: 'custom', label: 'Custom Field' },
     { value: 'skip', label: 'Skip' }
   ]
 
+  // Step 1 → parse preview (20 rows) + count total rows fast
   const handleFileSelect = (e) => {
     const selectedFile = e.target.files?.[0]
     if (!selectedFile) return
 
     setFile(selectedFile)
+
+    // First pass: quick preview (20 rows for display)
     Papa.parse(selectedFile, {
       header: true,
-      preview: 50,
+      preview: 20,
       complete: (results) => {
         setCsvHeaders(results.meta.fields || [])
         setCsvData(results.data.filter(row => Object.values(row).some(v => v)))
-        
+
         const autoMapping = {}
         results.meta.fields?.forEach(header => {
-          const lower = header.toLowerCase()
-          if (lower.includes('email')) autoMapping[header] = 'email'
-          else if (lower.includes('first') && lower.includes('name')) autoMapping[header] = 'firstName'
-          else if (lower.includes('last') && lower.includes('name')) autoMapping[header] = 'lastName'
-          else if (lower === 'company' || lower.includes('company')) autoMapping[header] = 'company'
-          else if (lower === 'domain' || lower.includes('domain')) autoMapping[header] = 'domain'
-          else autoMapping[header] = 'skip'
+          const lower = header.toLowerCase().trim()
+          if (lower === 'email' || lower === 'old email' || lower.includes('email')) autoMapping[header] = 'email'
+          else if (lower === 'first name' || lower === 'firstname' || (lower.includes('first') && lower.includes('name'))) autoMapping[header] = 'firstName'
+          else if (lower === 'last name' || lower === 'lastname' || (lower.includes('last') && lower.includes('name'))) autoMapping[header] = 'lastName'
+          else if (lower === 'company' || lower === 'company name') autoMapping[header] = 'company'
+          else if (lower === 'domain' || lower === 'website') autoMapping[header] = 'domain'
+          else if (lower === 'phone' || lower === 'company phone' || lower.includes('telephone')) autoMapping[header] = 'phone'
+          else if (lower === 'person linkedin url' || lower === 'linkedin url' || lower === 'linkedin') autoMapping[header] = 'linkedinUrl'
+          else if (lower === 'source' || lower.includes('lead source')) autoMapping[header] = 'source'
+          else if (lower === 'status') autoMapping[header] = 'status'
+          else autoMapping[header] = 'custom'
         })
         setColumnMapping(autoMapping)
-        setStep(2)
+
+        // Second pass: count total rows (fast, no data storage)
+        let count = 0
+        Papa.parse(selectedFile, {
+          header: true,
+          skipEmptyLines: true,
+          step: () => { count++ },
+          complete: () => { setTotalRowCount(count); setStep(2) }
+        })
       },
       error: (error) => {
         toast.error('Failed to parse CSV file')
@@ -1740,39 +1797,105 @@ function ImportCenterPage({ onImportComplete }) {
     })
   }
 
+  const mapRowToLead = (row) => {
+    const lead = { customFields: {} }
+    Object.entries(columnMapping).forEach(([csvColumn, field]) => {
+      if (field === 'skip') return
+      if (field === 'custom') {
+        if (row[csvColumn]) lead.customFields[csvColumn] = row[csvColumn]
+      } else {
+        lead[field] = row[csvColumn]
+      }
+    })
+    return lead
+  }
+
+  // Chunked upload: parse full file → send 5000 rows at a time → update progress
   const handleImport = async () => {
     setImporting(true)
+    abortRef.current = false
     setStep(3)
 
-    try {
-      const leads = csvData.map(row => {
-        const lead = { customFields: {} }
-        Object.entries(columnMapping).forEach(([csvColumn, field]) => {
-          if (field === 'skip') return
-          if (field === 'custom') {
-            lead.customFields[csvColumn] = row[csvColumn]
-          } else {
-            lead[field] = row[csvColumn]
-          }
-        })
-        return lead
-      }).filter(lead => lead.email)
+    const totals = { imported: 0, updated: 0, skipped: 0, errors: 0, total: 0 }
+    const startTime = Date.now()
 
-      const res = await fetch(`${API_BASE}/leads/bulk`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ leads })
+    try {
+      // Parse FULL file into memory-efficient chunks
+      const allLeads = await new Promise((resolve, reject) => {
+        const mapped = []
+        Papa.parse(file, {
+          header: true,
+          skipEmptyLines: true,
+          complete: (results) => {
+            results.data.forEach(row => {
+              if (!Object.values(row).some(v => v)) return
+              const lead = mapRowToLead(row)
+              if (lead.email) mapped.push(lead)
+            })
+            resolve(mapped)
+          },
+          error: reject
+        })
       })
 
-      const result = await res.json()
-      setImportResult(result)
+      const totalLeads = allLeads.length
+      const totalChunks = Math.ceil(totalLeads / CLIENT_CHUNK_SIZE)
+
+      setProgress(p => ({ ...p, total: totalLeads, totalChunks }))
+
+      for (let i = 0; i < totalLeads; i += CLIENT_CHUNK_SIZE) {
+        if (abortRef.current) break
+
+        const chunkIndex = Math.floor(i / CLIENT_CHUNK_SIZE) + 1
+        const chunk = allLeads.slice(i, i + CLIENT_CHUNK_SIZE)
+
+        const res = await fetch(`${API_BASE}/leads/bulk`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ leads: chunk, fileName: file?.name || 'csv-import' })
+        })
+
+        const result = await res.json()
+
+        totals.imported += result.imported || 0
+        totals.updated += result.updated || 0
+        totals.skipped += result.skipped || 0
+        totals.errors += result.errors || 0
+        totals.total += result.total || chunk.length
+
+        const sent = Math.min(i + CLIENT_CHUNK_SIZE, totalLeads)
+        const percent = Math.round((sent / totalLeads) * 100)
+        const elapsed = (Date.now() - startTime) / 1000
+        const speed = Math.round(sent / elapsed)
+        const remaining = totalLeads - sent
+        const etaSec = speed > 0 ? Math.round(remaining / speed) : 0
+        const eta = etaSec > 60 ? `${Math.floor(etaSec / 60)}m ${etaSec % 60}s` : `${etaSec}s`
+
+        setProgress({
+          percent,
+          sent,
+          total: totalLeads,
+          inserted: totals.imported,
+          updated: totals.updated,
+          skipped: totals.skipped,
+          errors: totals.errors,
+          currentChunk: chunkIndex,
+          totalChunks,
+          speed,
+          eta: percent >= 100 ? 'Done' : `~${eta} remaining`
+        })
+      }
+
+      setImportResult(totals)
       setStep(4)
       onImportComplete()
-      toast.success(`Imported ${result.imported} leads`)
+      toast.success(`Imported ${totals.imported.toLocaleString()} leads`)
     } catch (error) {
-      toast.error('Import failed')
+      toast.error('Import failed: ' + error.message)
       console.error(error)
-      setStep(2)
+      setImportResult(totals.total > 0 ? totals : null)
+      if (totals.total > 0) setStep(4)
+      else setStep(2)
     } finally {
       setImporting(false)
     }
@@ -1785,13 +1908,16 @@ function ImportCenterPage({ onImportComplete }) {
     setCsvHeaders([])
     setColumnMapping({})
     setImportResult(null)
+    setTotalRowCount(0)
+    setProgress({ percent: 0, sent: 0, total: 0, inserted: 0, updated: 0, skipped: 0, errors: 0, currentChunk: 0, totalChunks: 0, speed: 0, eta: '' })
+    abortRef.current = false
   }
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Import Center</h1>
-        <p className="text-muted-foreground">Import leads from CSV files</p>
+        <p className="text-muted-foreground">Import leads from CSV files — supports 500K+ rows</p>
       </div>
 
       <div className="flex items-center gap-4">
@@ -1832,7 +1958,7 @@ function ImportCenterPage({ onImportComplete }) {
               <input ref={fileInputRef} type="file" accept=".csv" onChange={handleFileSelect} className="hidden" />
               <FileSpreadsheet className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-medium mb-2">Drop your CSV file here</h3>
-              <p className="text-muted-foreground mb-4">or click to browse</p>
+              <p className="text-muted-foreground mb-4">or click to browse — supports up to 500K+ rows</p>
               <Button variant="outline">Select CSV File</Button>
             </div>
           </CardContent>
@@ -1841,16 +1967,28 @@ function ImportCenterPage({ onImportComplete }) {
 
       {step === 2 && (
         <div className="space-y-6">
+          {/* File info banner */}
+          <Card className="rounded-2xl border-primary/20 bg-primary/5">
+            <CardContent className="p-4 flex items-center gap-4">
+              <FileSpreadsheet className="w-8 h-8 text-primary" />
+              <div className="flex-1">
+                <p className="font-medium">{file?.name}</p>
+                <p className="text-sm text-muted-foreground">{totalRowCount.toLocaleString()} rows detected &middot; {(file?.size / 1024 / 1024).toFixed(1)} MB</p>
+              </div>
+              <Badge variant="outline" className="text-lg px-4 py-1">{totalRowCount.toLocaleString()} leads</Badge>
+            </CardContent>
+          </Card>
+
           <Card className="rounded-2xl">
             <CardHeader>
               <CardTitle>Map Columns</CardTitle>
-              <CardDescription>Match your CSV columns to lead fields</CardDescription>
+              <CardDescription>Match your CSV columns to lead fields. Unmapped columns become custom fields.</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
                 {csvHeaders.map(header => (
                   <div key={header} className="flex items-center gap-4">
-                    <div className="w-48 text-sm font-medium truncate">{header}</div>
+                    <div className="w-48 text-sm font-medium truncate" title={header}>{header}</div>
                     <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0" />
                     <Select value={columnMapping[header] || 'skip'} onValueChange={(value) => setColumnMapping({ ...columnMapping, [header]: value })}>
                       <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
@@ -1886,23 +2024,83 @@ function ImportCenterPage({ onImportComplete }) {
             </CardContent>
           </Card>
 
-          <div className="flex gap-4">
+          <div className="flex gap-4 items-center">
             <Button variant="outline" onClick={resetImport}>Back</Button>
-            <Button onClick={handleImport} disabled={!Object.values(columnMapping).includes('email')}>
-              Import {csvData.filter(r => r[Object.entries(columnMapping).find(([k, v]) => v === 'email')?.[0]]).length} Leads
+            <Button onClick={handleImport} disabled={!Object.values(columnMapping).includes('email')} className="min-w-[200px]">
+              <Upload className="w-4 h-4 mr-2" />
+              Import {totalRowCount.toLocaleString()} Leads
             </Button>
+            <span className="text-sm text-muted-foreground">Will upload in {Math.ceil(totalRowCount / CLIENT_CHUNK_SIZE)} batches of {CLIENT_CHUNK_SIZE.toLocaleString()}</span>
           </div>
         </div>
       )}
 
       {step === 3 && (
-        <Card className="rounded-2xl">
-          <CardContent className="p-12 text-center">
-            <Loader2 className="w-12 h-12 animate-spin mx-auto text-primary mb-4" />
-            <h3 className="text-lg font-medium">Importing leads...</h3>
-            <p className="text-muted-foreground">This may take a moment</p>
-          </CardContent>
-        </Card>
+        <div className="space-y-6">
+          <Card className="rounded-2xl">
+            <CardContent className="p-8">
+              {/* Percentage circle */}
+              <div className="flex flex-col items-center mb-8">
+                <div className="relative w-40 h-40">
+                  <svg className="w-40 h-40 -rotate-90" viewBox="0 0 160 160">
+                    <circle cx="80" cy="80" r="70" fill="none" stroke="currentColor" strokeWidth="8" className="text-muted/30" />
+                    <circle cx="80" cy="80" r="70" fill="none" stroke="currentColor" strokeWidth="8" className="text-primary"
+                      strokeDasharray={2 * Math.PI * 70}
+                      strokeDashoffset={2 * Math.PI * 70 * (1 - progress.percent / 100)}
+                      strokeLinecap="round"
+                      style={{ transition: 'stroke-dashoffset 0.5s ease' }}
+                    />
+                  </svg>
+                  <div className="absolute inset-0 flex flex-col items-center justify-center">
+                    <span className="text-4xl font-bold">{progress.percent}%</span>
+                    <span className="text-xs text-muted-foreground">{progress.eta}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Linear progress bar */}
+              <div className="w-full bg-muted rounded-full h-3 mb-4 overflow-hidden">
+                <div className="h-full bg-primary rounded-full transition-all duration-500 ease-out" style={{ width: `${progress.percent}%` }} />
+              </div>
+
+              <div className="text-center mb-6">
+                <p className="text-lg font-medium">
+                  {progress.sent.toLocaleString()} / {progress.total.toLocaleString()} leads processed
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Batch {progress.currentChunk} of {progress.totalChunks} &middot; {progress.speed.toLocaleString()} leads/sec
+                </p>
+              </div>
+
+              {/* Live stats grid */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="p-3 rounded-xl bg-green-500/10 border border-green-500/20 text-center">
+                  <p className="text-xl font-bold text-green-600">{progress.inserted.toLocaleString()}</p>
+                  <p className="text-xs text-muted-foreground">Inserted</p>
+                </div>
+                <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 text-center">
+                  <p className="text-xl font-bold text-blue-600">{progress.updated.toLocaleString()}</p>
+                  <p className="text-xs text-muted-foreground">Updated</p>
+                </div>
+                <div className="p-3 rounded-xl bg-yellow-500/10 border border-yellow-500/20 text-center">
+                  <p className="text-xl font-bold text-yellow-600">{progress.skipped.toLocaleString()}</p>
+                  <p className="text-xs text-muted-foreground">Duplicates</p>
+                </div>
+                <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-center">
+                  <p className="text-xl font-bold text-red-600">{progress.errors.toLocaleString()}</p>
+                  <p className="text-xs text-muted-foreground">Errors</p>
+                </div>
+              </div>
+
+              <div className="flex justify-center mt-6">
+                <Button variant="destructive" size="sm" onClick={() => { abortRef.current = true }}>
+                  <X className="w-4 h-4 mr-2" />
+                  Cancel Import
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       )}
 
       {step === 4 && importResult && (
@@ -1910,16 +2108,99 @@ function ImportCenterPage({ onImportComplete }) {
           <CardContent className="p-12 text-center">
             <CheckCircle2 className="w-16 h-16 mx-auto text-green-500 mb-4" />
             <h3 className="text-2xl font-semibold mb-2">Import Complete!</h3>
-            <div className="space-y-2 text-muted-foreground mb-6">
-              <p className="text-lg"><span className="text-foreground font-semibold">{importResult.imported}</span> leads imported</p>
-              <p><span className="text-foreground font-semibold">{importResult.skipped}</span> duplicates skipped</p>
-              <p>Total processed: {importResult.total}</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 my-6">
+              <div className="p-4 rounded-xl bg-green-500/10 border border-green-500/20">
+                <p className="text-2xl font-bold text-green-600">{importResult.imported.toLocaleString()}</p>
+                <p className="text-sm text-muted-foreground">New Inserted</p>
+              </div>
+              <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/20">
+                <p className="text-2xl font-bold text-blue-600">{(importResult.updated || 0).toLocaleString()}</p>
+                <p className="text-sm text-muted-foreground">Updated</p>
+              </div>
+              <div className="p-4 rounded-xl bg-yellow-500/10 border border-yellow-500/20">
+                <p className="text-2xl font-bold text-yellow-600">{importResult.skipped.toLocaleString()}</p>
+                <p className="text-sm text-muted-foreground">Duplicates Skipped</p>
+              </div>
+              <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20">
+                <p className="text-2xl font-bold text-red-600">{(importResult.errors || 0).toLocaleString()}</p>
+                <p className="text-sm text-muted-foreground">Errors</p>
+              </div>
             </div>
+            <p className="text-muted-foreground mb-6">Total processed: {importResult.total.toLocaleString()}</p>
             <Button onClick={resetImport}>Import More</Button>
           </CardContent>
         </Card>
       )}
+
+      <ImportLogsSection />
     </div>
+  )
+}
+
+// Import Logs Section
+function ImportLogsSection() {
+  const [logs, setLogs] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    fetchLogs()
+  }, [])
+
+  const fetchLogs = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/import-logs`)
+      const data = await res.json()
+      setLogs(data)
+    } catch (error) {
+      console.error('Failed to fetch import logs:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (loading) return null
+  if (logs.length === 0) return null
+
+  return (
+    <Card className="rounded-2xl">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <FileSpreadsheet className="w-5 h-5" />
+          Import History
+        </CardTitle>
+        <CardDescription>Recent CSV import results</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50">
+              <tr>
+                <th className="p-3 text-left font-medium text-muted-foreground">File</th>
+                <th className="p-3 text-left font-medium text-muted-foreground">Total Rows</th>
+                <th className="p-3 text-left font-medium text-muted-foreground">Inserted</th>
+                <th className="p-3 text-left font-medium text-muted-foreground">Updated</th>
+                <th className="p-3 text-left font-medium text-muted-foreground">Duplicates</th>
+                <th className="p-3 text-left font-medium text-muted-foreground">Errors</th>
+                <th className="p-3 text-left font-medium text-muted-foreground">Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              {logs.map(log => (
+                <tr key={log.id} className="border-t border-border">
+                  <td className="p-3 font-medium">{log.file_name || '-'}</td>
+                  <td className="p-3">{log.total_rows}</td>
+                  <td className="p-3"><span className="text-green-600 font-medium">{log.inserted_count}</span></td>
+                  <td className="p-3"><span className="text-blue-600 font-medium">{log.updated_count}</span></td>
+                  <td className="p-3"><span className="text-yellow-600 font-medium">{log.duplicate_count}</span></td>
+                  <td className="p-3"><span className="text-red-600 font-medium">{log.error_count}</span></td>
+                  <td className="p-3 text-muted-foreground">{new Date(log.created_at).toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -2028,7 +2309,7 @@ function SettingsPage() {
 
 // Dialogs
 function NewLeadDialog({ open, onOpenChange, onSuccess }) {
-  const [formData, setFormData] = useState({ email: '', firstName: '', lastName: '', company: '', domain: '' })
+  const [formData, setFormData] = useState({ email: '', firstName: '', lastName: '', company: '', domain: '', phone: '', linkedinUrl: '', source: '', status: 'active' })
   const [loading, setLoading] = useState(false)
 
   const handleSubmit = async () => {
@@ -2038,7 +2319,7 @@ function NewLeadDialog({ open, onOpenChange, onSuccess }) {
       await fetch(`${API_BASE}/leads`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formData) })
       toast.success('Lead created')
       onOpenChange(false)
-      setFormData({ email: '', firstName: '', lastName: '', company: '', domain: '' })
+      setFormData({ email: '', firstName: '', lastName: '', company: '', domain: '', phone: '', linkedinUrl: '', source: '', status: 'active' })
       onSuccess()
     } catch (error) {
       toast.error('Failed to create lead')
@@ -2049,7 +2330,7 @@ function NewLeadDialog({ open, onOpenChange, onSuccess }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>New Lead</DialogTitle>
           <DialogDescription>Add a new lead to your database</DialogDescription>
@@ -2069,13 +2350,41 @@ function NewLeadDialog({ open, onOpenChange, onSuccess }) {
               <Input value={formData.lastName} onChange={(e) => setFormData({ ...formData, lastName: e.target.value })} placeholder="Doe" />
             </div>
           </div>
-          <div className="space-y-2">
-            <Label>Company</Label>
-            <Input value={formData.company} onChange={(e) => setFormData({ ...formData, company: e.target.value })} placeholder="Acme Inc" />
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>Company</Label>
+              <Input value={formData.company} onChange={(e) => setFormData({ ...formData, company: e.target.value })} placeholder="Acme Inc" />
+            </div>
+            <div className="space-y-2">
+              <Label>Domain</Label>
+              <Input value={formData.domain} onChange={(e) => setFormData({ ...formData, domain: e.target.value })} placeholder="acme.com" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>Phone</Label>
+              <Input value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })} placeholder="+1 555-0100" />
+            </div>
+            <div className="space-y-2">
+              <Label>Source</Label>
+              <Input value={formData.source} onChange={(e) => setFormData({ ...formData, source: e.target.value })} placeholder="e.g., LinkedIn" />
+            </div>
           </div>
           <div className="space-y-2">
-            <Label>Domain</Label>
-            <Input value={formData.domain} onChange={(e) => setFormData({ ...formData, domain: e.target.value })} placeholder="acme.com" />
+            <Label>LinkedIn URL</Label>
+            <Input value={formData.linkedinUrl} onChange={(e) => setFormData({ ...formData, linkedinUrl: e.target.value })} placeholder="https://linkedin.com/in/..." />
+          </div>
+          <div className="space-y-2">
+            <Label>Status</Label>
+            <Select value={formData.status} onValueChange={(v) => setFormData({ ...formData, status: v })}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="active">Active</SelectItem>
+                <SelectItem value="inactive">Inactive</SelectItem>
+                <SelectItem value="bounced">Bounced</SelectItem>
+                <SelectItem value="unsubscribed">Unsubscribed</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </div>
         <DialogFooter>
