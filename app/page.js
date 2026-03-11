@@ -39,7 +39,15 @@ import {
   Tags,
   Phone,
   LinkIcon,
-  AlertCircle
+  AlertCircle,
+  LayoutGrid,
+  FolderOpen,
+  LogOut,
+  Shield,
+  ShieldCheck,
+  UserPlus,
+  Ban,
+  UserCheck
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -60,13 +68,45 @@ import Papa from 'papaparse'
 
 const API_BASE = '/api'
 
+// ── Auth helpers ──
+function getStoredToken() {
+  if (typeof window === 'undefined') return null
+  return localStorage.getItem('leadosToken')
+}
+function setStoredToken(token) {
+  localStorage.setItem('leadosToken', token)
+  document.cookie = `leadosToken=${token}; path=/; max-age=${7 * 24 * 3600}; SameSite=Lax`
+}
+function clearStoredToken() {
+  localStorage.removeItem('leadosToken')
+  localStorage.removeItem('leadosUser')
+  document.cookie = 'leadosToken=; path=/; max-age=0'
+}
+function getStoredUser() {
+  if (typeof window === 'undefined') return null
+  try { return JSON.parse(localStorage.getItem('leadosUser')) } catch { return null }
+}
+function setStoredUser(user) {
+  localStorage.setItem('leadosUser', JSON.stringify(user))
+}
+function authHeaders() {
+  const token = getStoredToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+function authFetch(url, opts = {}) {
+  return fetch(url, {
+    ...opts,
+    headers: { ...opts.headers, ...authHeaders() }
+  })
+}
+
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'leads', label: 'Leads', icon: Users },
   { id: 'lists', label: 'Lists', icon: List },
   { id: 'campaigns', label: 'Campaigns', icon: Target },
   { id: 'import', label: 'Import Center', icon: Upload },
-  { id: 'team', label: 'Team', icon: UsersRound },
+  { id: 'team', label: 'Team', icon: UsersRound, adminOnly: true },
   { id: 'settings', label: 'Settings', icon: Settings },
 ]
 
@@ -83,7 +123,263 @@ const defaultColumns = [
   { id: 'campaigns', label: 'Campaigns', visible: false },
 ]
 
+// ── Cache staleness threshold (ms) ──
+const CACHE_TTL = 30000 // 30 seconds
+
 export default function App() {
+  // ── Auth state ──
+  const [authUser, setAuthUser] = useState(null)
+  const [authLoading, setAuthLoading] = useState(true)
+  const [authScreen, setAuthScreen] = useState('login') // 'login' | 'register'
+
+  // Check for existing session on mount
+  useEffect(() => {
+    const stored = getStoredUser()
+    const token = getStoredToken()
+    if (stored && token) {
+      // Validate token with server
+      authFetch(`${API_BASE}/auth/me`).then(res => {
+        if (res.ok) return res.json()
+        throw new Error('Invalid session')
+      }).then(user => {
+        setAuthUser(user)
+        setStoredUser(user)
+        setAuthLoading(false)
+      }).catch(() => {
+        clearStoredToken()
+        setAuthLoading(false)
+      })
+    } else {
+      setAuthLoading(false)
+    }
+  }, [])
+
+  const handleLogin = async (email, password) => {
+    console.log('Login attempt:', email)
+    const res = await fetch(`${API_BASE}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    })
+    const data = await res.json()
+    console.log('Login response:', res.status, data)
+    if (!res.ok) throw new Error(data.error || 'Login failed')
+    console.log('Login success, setting user:', data.user)
+    setStoredToken(data.token)
+    setStoredUser(data.user)
+    setAuthUser(data.user)
+    console.log('Auth user set')
+    return data.user
+  }
+
+  const handleRegister = async (name, email, password) => {
+    const res = await fetch(`${API_BASE}/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, email, password })
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Registration failed')
+    setStoredToken(data.token)
+    setStoredUser(data.user)
+    setAuthUser(data.user)
+    return data.user
+  }
+
+  const handleLogout = () => {
+    clearStoredToken()
+    setAuthUser(null)
+  }
+
+  // Show loading screen
+  if (authLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 rounded-xl bg-primary flex items-center justify-center">
+            <Target className="w-7 h-7 text-primary-foreground" />
+          </div>
+          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+        </div>
+      </div>
+    )
+  }
+
+  // Show login/register screen
+  if (!authUser) {
+    return <LoginScreen
+      screen={authScreen}
+      setScreen={setAuthScreen}
+      onLogin={handleLogin}
+      onRegister={handleRegister}
+    />
+  }
+
+  const isAdmin = authUser.role === 'admin'
+
+  return <AuthenticatedApp
+    authUser={authUser}
+    isAdmin={isAdmin}
+    onLogout={handleLogout}
+  />
+}
+
+// ── Login / Register Screen ──
+function LoginScreen({ screen, setScreen, onLogin, onRegister }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [name, setName] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setError('')
+    setLoading(true)
+    try {
+      if (screen === 'login') {
+        await onLogin(email, password)
+      } else {
+        await onRegister(name, email, password)
+      }
+      // Success - component will unmount, no need to setLoading(false)
+    } catch (err) {
+      setError(err.message)
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="flex h-screen bg-background">
+      {/* Left side - branding */}
+      <div className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-primary/10 via-background to-primary/5 items-center justify-center p-12">
+        <div className="max-w-md">
+          <div className="flex items-center gap-3 mb-8">
+            <div className="w-12 h-12 rounded-xl bg-primary flex items-center justify-center">
+              <Target className="w-7 h-7 text-primary-foreground" />
+            </div>
+            <span className="text-3xl font-bold">LeadOS</span>
+          </div>
+          <h2 className="text-2xl font-semibold mb-4">Lead Intelligence Dashboard</h2>
+          <p className="text-muted-foreground text-lg leading-relaxed">
+            Centralized lead database for high-volume cold email operators. Import, enrich, and manage leads at scale.
+          </p>
+          <div className="mt-8 space-y-3">
+            <div className="flex items-center gap-3 text-muted-foreground">
+              <CheckCircle2 className="w-5 h-5 text-primary" />
+              <span>Import 500K+ leads via CSV</span>
+            </div>
+            <div className="flex items-center gap-3 text-muted-foreground">
+              <CheckCircle2 className="w-5 h-5 text-primary" />
+              <span>Campaign-based enrichment tracking</span>
+            </div>
+            <div className="flex items-center gap-3 text-muted-foreground">
+              <CheckCircle2 className="w-5 h-5 text-primary" />
+              <span>Team management with role-based access</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Right side - form */}
+      <div className="flex-1 flex items-center justify-center p-8">
+        <div className="w-full max-w-sm">
+          <div className="flex items-center gap-3 mb-8 lg:hidden">
+            <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center">
+              <Target className="w-6 h-6 text-primary-foreground" />
+            </div>
+            <span className="text-2xl font-bold">LeadOS</span>
+          </div>
+
+          <h1 className="text-2xl font-semibold mb-2">
+            {screen === 'login' ? 'Welcome back' : 'Create account'}
+          </h1>
+          <p className="text-muted-foreground mb-6">
+            {screen === 'login' ? 'Sign in to your account to continue' : 'Register a new account to get started'}
+          </p>
+
+          {error && (
+            <div className="mb-4 p-3 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              {error}
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {screen === 'register' && (
+              <div className="space-y-2">
+                <Label htmlFor="name">Full Name</Label>
+                <Input
+                  id="name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="John Doe"
+                  required
+                />
+              </div>
+            )}
+            <div className="space-y-2">
+              <Label htmlFor="email">Email</Label>
+              <Input
+                id="email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <Input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={screen === 'register' ? 'Min 6 characters' : '••••••••'}
+                required
+                minLength={screen === 'register' ? 6 : undefined}
+              />
+            </div>
+
+            <Button type="submit" className="w-full" disabled={loading}>
+              {loading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              {screen === 'login' ? 'Sign In' : 'Create Account'}
+            </Button>
+          </form>
+
+          <div className="mt-6 text-center text-sm text-muted-foreground">
+            {screen === 'login' ? (
+              <>
+                Don&apos;t have an account?{' '}
+                <button onClick={() => { setScreen('register'); setError('') }} className="text-primary hover:underline font-medium">
+                  Sign up
+                </button>
+              </>
+            ) : (
+              <>
+                Already have an account?{' '}
+                <button onClick={() => { setScreen('login'); setError('') }} className="text-primary hover:underline font-medium">
+                  Sign in
+                </button>
+              </>
+            )}
+          </div>
+
+          {screen === 'login' && (
+            <div className="mt-4 p-3 rounded-xl bg-muted text-xs text-muted-foreground">
+              <p className="font-medium mb-1">Default admin credentials:</p>
+              <p>Email: admin@leados.com</p>
+              <p>Password: admin123</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AuthenticatedApp({ authUser, isAdmin, onLogout }) {
   const [currentPage, setCurrentPage] = useState('dashboard')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [commandOpen, setCommandOpen] = useState(false)
@@ -113,6 +409,10 @@ export default function App() {
   const [addToCampaignOpen, setAddToCampaignOpen] = useState(false)
   const [filterPanelOpen, setFilterPanelOpen] = useState(false)
 
+  // Cache timestamps — skip fetches if data is fresh
+  const cacheRef = useRef({ dashboard: 0, leads: 0, campaigns: 0, lists: 0, tags: 0 })
+  const isFresh = useCallback((key) => Date.now() - cacheRef.current[key] < CACHE_TTL, [])
+
   useEffect(() => {
     const down = (e) => {
       if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
@@ -124,87 +424,110 @@ export default function App() {
     return () => document.removeEventListener('keydown', down)
   }, [])
 
-  const fetchDashboardData = useCallback(async () => {
+  const fetchDashboardData = useCallback(async (force = false) => {
+    if (!force && isFresh('dashboard')) return
     try {
       const [statsRes, activityRes] = await Promise.all([
-        fetch(`${API_BASE}/dashboard/stats`),
-        fetch(`${API_BASE}/dashboard/activity`)
+        authFetch(`${API_BASE}/dashboard/stats`),
+        authFetch(`${API_BASE}/dashboard/activity`)
       ])
       const statsData = await statsRes.json()
       const activityData = await activityRes.json()
-      setStats(statsData)
-      setActivities(activityData)
+      // Only update stats if we got valid data (not an error object)
+      if (statsData && typeof statsData.totalLeads === 'number') {
+        setStats(statsData)
+      }
+      setActivities(Array.isArray(activityData) ? activityData : [])
+      cacheRef.current.dashboard = Date.now()
     } catch (error) {
       console.error('Failed to fetch dashboard data:', error)
     }
-  }, [])
+  }, [isFresh])
 
-  const fetchLeads = useCallback(async (page = 1) => {
-    setLoading(true)
+  const fetchLeads = useCallback(async (page = 1, force = false) => {
+    // Non-blocking: only show spinner if we have no data yet
+    const showSpinner = leads.length === 0
+    if (showSpinner) setLoading(true)
     try {
       const params = new URLSearchParams({
         page: page.toString(),
         limit: pagination.limit.toString(),
         sortBy,
         sortOrder,
+        lean: '1',
         ...(searchQuery && { search: searchQuery }),
         ...(activeFilters.tag && { tag: activeFilters.tag }),
         ...(activeFilters.dateFrom && { dateFrom: activeFilters.dateFrom }),
         ...(activeFilters.dateTo && { dateTo: activeFilters.dateTo }),
         ...(activeFilters.listId && { listId: activeFilters.listId })
       })
-      const res = await fetch(`${API_BASE}/leads?${params}`)
+      const res = await authFetch(`${API_BASE}/leads?${params}`)
       const data = await res.json()
       setLeads(data.leads || [])
       setPagination(data.pagination || { total: 0, page: 1, limit: 20, totalPages: 0 })
+      cacheRef.current.leads = Date.now()
     } catch (error) {
       console.error('Failed to fetch leads:', error)
       toast.error('Failed to fetch leads')
     } finally {
       setLoading(false)
     }
-  }, [searchQuery, sortBy, sortOrder, pagination.limit, activeFilters])
+  }, [searchQuery, sortBy, sortOrder, pagination.limit, activeFilters, leads.length])
 
-  const fetchCampaigns = useCallback(async () => {
+  const fetchCampaigns = useCallback(async (force = false) => {
+    if (!force && isFresh('campaigns')) return
     try {
-      const res = await fetch(`${API_BASE}/campaigns`)
+      const res = await authFetch(`${API_BASE}/campaigns`)
       const data = await res.json()
-      setCampaigns(data)
+      setCampaigns(Array.isArray(data) ? data : [])
+      cacheRef.current.campaigns = Date.now()
     } catch (error) {
       console.error('Failed to fetch campaigns:', error)
     }
-  }, [])
+  }, [isFresh])
 
-  const fetchLists = useCallback(async () => {
+  const fetchLists = useCallback(async (force = false) => {
+    if (!force && isFresh('lists')) return
     try {
-      const res = await fetch(`${API_BASE}/lists`)
+      const res = await authFetch(`${API_BASE}/lists`)
       const data = await res.json()
-      setLists(data)
+      setLists(Array.isArray(data) ? data : [])
+      cacheRef.current.lists = Date.now()
     } catch (error) {
       console.error('Failed to fetch lists:', error)
     }
-  }, [])
+  }, [isFresh])
 
-  const fetchTags = useCallback(async () => {
+  const fetchTags = useCallback(async (force = false) => {
+    if (!force && isFresh('tags')) return
     try {
-      const res = await fetch(`${API_BASE}/tags`)
+      const res = await authFetch(`${API_BASE}/tags`)
       const data = await res.json()
-      setAllTags(data)
+      setAllTags(Array.isArray(data) ? data : [])
+      cacheRef.current.tags = Date.now()
     } catch (error) {
       console.error('Failed to fetch tags:', error)
     }
+  }, [isFresh])
+
+  // Initial load — fetch everything once
+  useEffect(() => {
+    fetchDashboardData(true)
+    fetchCampaigns(true)
+    fetchLists(true)
+    fetchTags(true)
   }, [])
 
+  // On page navigation — only fetch what's needed and stale
   useEffect(() => {
-    fetchDashboardData()
-    fetchCampaigns()
-    fetchLists()
-    fetchTags()
-  }, [])
-
-  useEffect(() => {
-    if (currentPage === 'leads') {
+    if (currentPage === 'leads' && !isFresh('leads')) {
       fetchLeads(pagination.page)
+    } else if (currentPage === 'dashboard') {
+      fetchDashboardData()
+    } else if (currentPage === 'campaigns') {
+      fetchCampaigns()
+    } else if (currentPage === 'lists') {
+      fetchLists()
     }
   }, [currentPage])
 
@@ -243,15 +566,17 @@ export default function App() {
   const handleBulkDelete = async () => {
     if (selectedLeads.length === 0) return
     try {
-      await fetch(`${API_BASE}/leads/bulk-action`, {
+      await authFetch(`${API_BASE}/leads/bulk-action`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'delete', leadIds: selectedLeads })
       })
       toast.success(`Deleted ${selectedLeads.length} leads`)
       setSelectedLeads([])
-      fetchLeads(pagination.page)
-      fetchDashboardData()
+      cacheRef.current.leads = 0
+      cacheRef.current.dashboard = 0
+      fetchLeads(pagination.page, true)
+      fetchDashboardData(true)
     } catch (error) {
       toast.error('Failed to delete leads')
     }
@@ -260,7 +585,7 @@ export default function App() {
   const handleBulkAddToCampaign = async (campaignId) => {
     if (selectedLeads.length === 0) return
     try {
-      await fetch(`${API_BASE}/leads/bulk-action`, {
+      await authFetch(`${API_BASE}/leads/bulk-action`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'addToCampaign', leadIds: selectedLeads, data: { campaignId } })
@@ -268,7 +593,8 @@ export default function App() {
       toast.success(`Added ${selectedLeads.length} leads to campaign`)
       setSelectedLeads([])
       setBulkCampaignOpen(false)
-      fetchLeads(pagination.page)
+      cacheRef.current.leads = 0
+      fetchLeads(pagination.page, true)
     } catch (error) {
       toast.error('Failed to add leads to campaign')
     }
@@ -277,7 +603,7 @@ export default function App() {
   const handleBulkAddTag = async (tag) => {
     if (selectedLeads.length === 0 || !tag) return
     try {
-      await fetch(`${API_BASE}/leads/bulk-action`, {
+      await authFetch(`${API_BASE}/leads/bulk-action`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'addTag', leadIds: selectedLeads, data: { tag } })
@@ -285,8 +611,10 @@ export default function App() {
       toast.success(`Added tag to ${selectedLeads.length} leads`)
       setSelectedLeads([])
       setBulkTagOpen(false)
-      fetchLeads(pagination.page)
-      fetchTags()
+      cacheRef.current.leads = 0
+      cacheRef.current.tags = 0
+      fetchLeads(pagination.page, true)
+      fetchTags(true)
     } catch (error) {
       toast.error('Failed to add tag')
     }
@@ -328,7 +656,7 @@ export default function App() {
         </div>
 
         <nav className="flex-1 py-4 px-2">
-          {navItems.map((item) => (
+          {navItems.filter(item => !item.adminOnly || isAdmin).map((item) => (
             <button
               key={item.id}
               onClick={() => {
@@ -344,18 +672,11 @@ export default function App() {
               }`}
             >
               <item.icon className="w-5 h-5 flex-shrink-0" />
-              <AnimatePresence>
-                {!sidebarCollapsed && (
-                  <motion.span
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    className="text-sm font-medium"
-                  >
-                    {item.label}
-                  </motion.span>
-                )}
-              </AnimatePresence>
+              {!sidebarCollapsed && (
+                <span className="text-sm font-medium transition-opacity duration-150">
+                  {item.label}
+                </span>
+              )}
             </button>
           ))}
         </nav>
@@ -420,17 +741,28 @@ export default function App() {
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" className="rounded-full">
                   <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-primary-foreground text-sm font-medium">
-                    A
+                    {(authUser.name || authUser.email || '?').charAt(0).toUpperCase()}
                   </div>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuLabel>Admin User</DropdownMenuLabel>
+                <DropdownMenuLabel>
+                  <div>{authUser.name}</div>
+                  <div className="text-xs font-normal text-muted-foreground">{authUser.email}</div>
+                  <Badge variant={isAdmin ? 'default' : 'secondary'} className="mt-1 text-[10px]">
+                    {isAdmin ? 'Admin' : 'User'}
+                  </Badge>
+                </DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem>Profile</DropdownMenuItem>
-                <DropdownMenuItem>Settings</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setCurrentPage('settings')}>
+                  <Settings className="w-4 h-4 mr-2" />
+                  Settings
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem>Log out</DropdownMenuItem>
+                <DropdownMenuItem onClick={onLogout} className="text-destructive">
+                  <LogOut className="w-4 h-4 mr-2" />
+                  Log out
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -479,8 +811,10 @@ export default function App() {
               onBack={() => setSelectedLead(null)}
               onUpdate={(updated) => {
                 setSelectedLead(updated)
-                fetchLeads(pagination.page)
-                fetchTags()
+                cacheRef.current.leads = 0
+                cacheRef.current.tags = 0
+                fetchLeads(pagination.page, true)
+                fetchTags(true)
               }}
               campaigns={campaigns}
               allTags={allTags}
@@ -501,7 +835,8 @@ export default function App() {
               list={selectedList}
               onBack={() => {
                 setSelectedList(null)
-                fetchLists()
+                cacheRef.current.lists = 0
+                fetchLists(true)
               }}
               campaigns={campaigns}
               allTags={allTags}
@@ -521,7 +856,8 @@ export default function App() {
               campaign={selectedCampaign}
               onBack={() => {
                 setSelectedCampaign(null)
-                fetchCampaigns()
+                cacheRef.current.campaigns = 0
+                fetchCampaigns(true)
               }}
               onAddLeads={() => setAddToCampaignOpen(true)}
               onExport={() => handleExportCampaign(selectedCampaign.id)}
@@ -529,14 +865,20 @@ export default function App() {
           )}
           {currentPage === 'import' && (
             <ImportCenterPage
+              campaigns={campaigns}
               onImportComplete={() => {
-                fetchLeads(1)
-                fetchDashboardData()
-                fetchTags()
+                cacheRef.current.leads = 0
+                cacheRef.current.dashboard = 0
+                cacheRef.current.tags = 0
+                cacheRef.current.campaigns = 0
+                fetchLeads(1, true)
+                fetchDashboardData(true)
+                fetchTags(true)
+                fetchCampaigns(true)
               }}
             />
           )}
-          {currentPage === 'team' && <TeamPage />}
+          {currentPage === 'team' && isAdmin && <TeamPage authUser={authUser} />}
           {currentPage === 'settings' && <SettingsPage />}
         </main>
       </div>
@@ -582,9 +924,9 @@ export default function App() {
       </CommandDialog>
 
       {/* Dialogs */}
-      <NewLeadDialog open={newLeadOpen} onOpenChange={setNewLeadOpen} onSuccess={() => { fetchLeads(pagination.page); fetchDashboardData() }} />
-      <NewCampaignDialog open={newCampaignOpen} onOpenChange={setNewCampaignOpen} onSuccess={fetchCampaigns} />
-      <NewListDialog open={newListOpen} onOpenChange={setNewListOpen} onSuccess={fetchLists} campaigns={campaigns} allTags={allTags} />
+      <NewLeadDialog open={newLeadOpen} onOpenChange={setNewLeadOpen} onSuccess={() => { cacheRef.current.leads = 0; cacheRef.current.dashboard = 0; fetchLeads(pagination.page, true); fetchDashboardData(true) }} />
+      <NewCampaignDialog open={newCampaignOpen} onOpenChange={setNewCampaignOpen} onSuccess={() => { cacheRef.current.campaigns = 0; fetchCampaigns(true) }} />
+      <NewListDialog open={newListOpen} onOpenChange={setNewListOpen} onSuccess={() => { cacheRef.current.lists = 0; fetchLists(true) }} campaigns={campaigns} allTags={allTags} />
 
       <Dialog open={bulkCampaignOpen} onOpenChange={setBulkCampaignOpen}>
         <DialogContent>
@@ -593,7 +935,7 @@ export default function App() {
             <DialogDescription>Select a campaign to add {selectedLeads.length} leads to.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
-            {campaigns.map((campaign) => (
+            {(campaigns || []).map((campaign) => (
               <button
                 key={campaign.id}
                 onClick={() => handleBulkAddToCampaign(campaign.id)}
@@ -650,7 +992,7 @@ function DashboardPage({ stats, activities }) {
             </div>
           ) : (
             <div className="space-y-4">
-              {activities.map((activity) => (
+              {(activities || []).map((activity) => (
                 <div key={activity.id} className="flex items-center justify-between py-3 border-b border-border last:border-0">
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center">
@@ -702,6 +1044,50 @@ function LeadsPage({
   setNewLeadOpen, setCurrentPage, campaigns, lists, allTags, activeFilters,
   setActiveFilters, hasActiveFilters, clearFilters, onExport
 }) {
+  const [viewMode, setViewMode] = useState('table')
+  const [allGridLeads, setAllGridLeads] = useState([])
+  const [gridLoading, setGridLoading] = useState(false)
+  const [expandedDate, setExpandedDate] = useState(null)
+  const gridFetchedRef = useRef(false)
+
+  // Fetch ALL leads for grid view in a single fast request
+  const fetchAllLeadsForGrid = useCallback(async () => {
+    if (gridFetchedRef.current && allGridLeads.length > 0) return
+    setGridLoading(true)
+    try {
+      const params = new URLSearchParams({
+        page: '1',
+        limit: '10000',
+        sortBy: 'createdAt',
+        sortOrder: 'desc',
+        lean: '1',
+        grid: '1',
+        ...(searchQuery && { search: searchQuery }),
+        ...(activeFilters.tag && { tag: activeFilters.tag }),
+        ...(activeFilters.dateFrom && { dateFrom: activeFilters.dateFrom }),
+        ...(activeFilters.dateTo && { dateTo: activeFilters.dateTo }),
+        ...(activeFilters.listId && { listId: activeFilters.listId })
+      })
+      const res = await authFetch(`${API_BASE}/leads?${params}`)
+      const data = await res.json()
+      setAllGridLeads(data.leads || [])
+      gridFetchedRef.current = true
+    } catch (error) {
+      console.error('Failed to fetch all leads for grid:', error)
+      toast.error('Failed to load grid view')
+    } finally {
+      setGridLoading(false)
+    }
+  }, [searchQuery, activeFilters])
+
+  // Re-fetch grid leads when switching to grid view or when filters change
+  useEffect(() => {
+    if (viewMode === 'grid') {
+      gridFetchedRef.current = false
+      fetchAllLeadsForGrid()
+    }
+  }, [viewMode, searchQuery, activeFilters, fetchAllLeadsForGrid])
+
   const toggleSelectAll = () => {
     if (selectedLeads.length === leads.length) {
       setSelectedLeads([])
@@ -719,6 +1105,19 @@ function LeadsPage({
   }
 
   const visibleColumns = columns.filter(col => col.visible)
+
+  // Group ALL leads by creation date for grid view
+  const groupedLeads = (allGridLeads || []).reduce((acc, lead) => {
+    const date = new Date(lead.createdAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+    if (!acc[date]) acc[date] = []
+    acc[date].push(lead)
+    return acc
+  }, {})
+
+  const handleExportGroup = (groupLeads) => {
+    const ids = groupLeads.map(l => l.id)
+    onExport(ids)
+  }
 
   return (
     <div className="space-y-4">
@@ -767,21 +1166,21 @@ function LeadsPage({
             <div className="space-y-4">
               <div className="space-y-2">
                 <Label>Filter by Tag</Label>
-                <Select value={activeFilters.tag} onValueChange={(v) => setActiveFilters({ ...activeFilters, tag: v })}>
+                <Select value={activeFilters.tag || '__all__'} onValueChange={(v) => setActiveFilters({ ...activeFilters, tag: v === '__all__' ? '' : v })}>
                   <SelectTrigger><SelectValue placeholder="Select tag..." /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">All Tags</SelectItem>
-                    {allTags.map(tag => <SelectItem key={tag} value={tag}>{tag}</SelectItem>)}
+                    <SelectItem value="__all__">All Tags</SelectItem>
+                    {(allTags || []).map(tag => <SelectItem key={tag} value={tag}>{tag}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-2">
                 <Label>Filter by List</Label>
-                <Select value={activeFilters.listId} onValueChange={(v) => setActiveFilters({ ...activeFilters, listId: v })}>
+                <Select value={activeFilters.listId || '__all__'} onValueChange={(v) => setActiveFilters({ ...activeFilters, listId: v === '__all__' ? '' : v })}>
                   <SelectTrigger><SelectValue placeholder="Select list..." /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">All Leads</SelectItem>
-                    {lists.map(list => <SelectItem key={list.id} value={list.id}>{list.name}</SelectItem>)}
+                    <SelectItem value="__all__">All Leads</SelectItem>
+                    {(lists || []).map(list => <SelectItem key={list.id} value={list.id}>{list.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -851,6 +1250,25 @@ function LeadsPage({
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
+
+        <div className="flex items-center border border-border rounded-lg overflow-hidden">
+          <Button
+            variant={viewMode === 'table' ? 'secondary' : 'ghost'}
+            size="sm"
+            className="rounded-none h-8 px-2"
+            onClick={() => setViewMode('table')}
+          >
+            <List className="w-4 h-4" />
+          </Button>
+          <Button
+            variant={viewMode === 'grid' ? 'secondary' : 'ghost'}
+            size="sm"
+            className="rounded-none h-8 px-2"
+            onClick={() => setViewMode('grid')}
+          >
+            <LayoutGrid className="w-4 h-4" />
+          </Button>
+        </div>
       </div>
 
       {/* Bulk Actions Bar */}
@@ -887,97 +1305,367 @@ function LeadsPage({
         )}
       </AnimatePresence>
 
-      {/* Table */}
-      <Card className="rounded-2xl overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-4 text-left">
-                  <Checkbox checked={leads.length > 0 && selectedLeads.length === leads.length} onCheckedChange={toggleSelectAll} />
-                </th>
-                {visibleColumns.map(col => (
-                  <th key={col.id} className="p-4 text-left text-sm font-medium text-muted-foreground">{col.label}</th>
-                ))}
-                <th className="p-4 text-right" />
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
+      {/* Table View */}
+      {viewMode === 'table' && (
+        <Card className="rounded-2xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-muted/50">
                 <tr>
-                  <td colSpan={visibleColumns.length + 2} className="p-8 text-center">
-                    <Loader2 className="w-6 h-6 animate-spin mx-auto text-muted-foreground" />
-                  </td>
+                  <th className="p-4 text-left">
+                    <Checkbox checked={leads.length > 0 && selectedLeads.length === leads.length} onCheckedChange={toggleSelectAll} />
+                  </th>
+                  {visibleColumns.map(col => (
+                    <th key={col.id} className="p-4 text-left text-sm font-medium text-muted-foreground">{col.label}</th>
+                  ))}
+                  <th className="p-4 text-right" />
                 </tr>
-              ) : leads.length === 0 ? (
-                <tr>
-                  <td colSpan={visibleColumns.length + 2} className="p-8 text-center text-muted-foreground">
-                    No leads found. Import some leads to get started.
-                  </td>
-                </tr>
-              ) : (
-                leads.map(lead => (
-                  <tr key={lead.id} className="border-t border-border hover:bg-muted/30 cursor-pointer transition-colors" onClick={() => onLeadClick(lead)}>
-                    <td className="p-4" onClick={(e) => e.stopPropagation()}>
-                      <Checkbox checked={selectedLeads.includes(lead.id)} onCheckedChange={() => toggleSelect(lead.id)} />
-                    </td>
-                    {visibleColumns.map(col => (
-                      <td key={col.id} className="p-4">
-                        {col.id === 'tags' ? (
-                          <div className="flex gap-1 flex-wrap">
-                            {(lead.tags || []).slice(0, 3).map((tag, i) => (
-                              <Badge key={i} variant="secondary" className="text-xs">{tag}</Badge>
-                            ))}
-                            {(lead.tags || []).length > 3 && <Badge variant="outline" className="text-xs">+{lead.tags.length - 3}</Badge>}
-                          </div>
-                        ) : col.id === 'status' ? (
-                          <Badge variant={lead.status === 'active' ? 'default' : 'secondary'}>{lead.status || 'active'}</Badge>
-                        ) : col.id === 'campaigns' ? (
-                          <Badge variant="outline">{(lead.campaigns || []).length} campaigns</Badge>
-                        ) : col.id === 'createdAt' ? (
-                          <span className="text-sm text-muted-foreground">{new Date(lead.createdAt).toLocaleDateString()}</span>
-                        ) : (
-                          <span className="text-sm">{lead[col.id] || '-'}</span>
-                        )}
-                      </td>
-                    ))}
-                    <td className="p-4 text-right" onClick={(e) => e.stopPropagation()}>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon"><MoreHorizontal className="w-4 h-4" /></Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => onLeadClick(lead)}>View Details</DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem className="text-destructive" onClick={async () => {
-                            await fetch(`${API_BASE}/leads/${lead.id}`, { method: 'DELETE' })
-                            toast.success('Lead deleted')
-                            fetchLeads(pagination.page)
-                          }}>
-                            Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr>
+                    <td colSpan={visibleColumns.length + 2} className="p-8 text-center">
+                      <Loader2 className="w-6 h-6 animate-spin mx-auto text-muted-foreground" />
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {pagination.totalPages > 1 && (
-          <div className="flex items-center justify-between p-4 border-t border-border">
-            <div className="text-sm text-muted-foreground">
-              Showing {(pagination.page - 1) * pagination.limit + 1} - {Math.min(pagination.page * pagination.limit, pagination.total)} of {pagination.total}
-            </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" disabled={pagination.page === 1} onClick={() => fetchLeads(pagination.page - 1)}>Previous</Button>
-              <Button variant="outline" size="sm" disabled={pagination.page === pagination.totalPages} onClick={() => fetchLeads(pagination.page + 1)}>Next</Button>
-            </div>
+                ) : leads.length === 0 ? (
+                  <tr>
+                    <td colSpan={visibleColumns.length + 2} className="p-8 text-center text-muted-foreground">
+                      No leads found. Import some leads to get started.
+                    </td>
+                  </tr>
+                ) : (
+                  leads.map(lead => (
+                    <tr key={lead.id} className="border-t border-border hover:bg-muted/30 cursor-pointer transition-colors" onClick={() => onLeadClick(lead)}>
+                      <td className="p-4" onClick={(e) => e.stopPropagation()}>
+                        <Checkbox checked={selectedLeads.includes(lead.id)} onCheckedChange={() => toggleSelect(lead.id)} />
+                      </td>
+                      {visibleColumns.map(col => (
+                        <td key={col.id} className="p-4">
+                          {col.id === 'tags' ? (
+                            <div className="flex gap-1 flex-wrap">
+                              {(lead.tags || []).slice(0, 3).map((tag, i) => (
+                                <Badge key={i} variant="secondary" className="text-xs">{tag}</Badge>
+                              ))}
+                              {(lead.tags || []).length > 3 && <Badge variant="outline" className="text-xs">+{lead.tags.length - 3}</Badge>}
+                            </div>
+                          ) : col.id === 'status' ? (
+                            <Badge variant={lead.status === 'active' ? 'default' : 'secondary'}>{lead.status || 'active'}</Badge>
+                          ) : col.id === 'campaigns' ? (
+                            <Badge variant="outline">{(lead.campaigns || []).length} campaigns</Badge>
+                          ) : col.id === 'createdAt' ? (
+                            <span className="text-sm text-muted-foreground">{new Date(lead.createdAt).toLocaleDateString()}</span>
+                          ) : (
+                            <span className="text-sm">{lead[col.id] || '-'}</span>
+                          )}
+                        </td>
+                      ))}
+                      <td className="p-4 text-right" onClick={(e) => e.stopPropagation()}>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon"><MoreHorizontal className="w-4 h-4" /></Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => onLeadClick(lead)}>View Details</DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem className="text-destructive" onClick={async () => {
+                              await authFetch(`${API_BASE}/leads/${lead.id}`, { method: 'DELETE' })
+                              toast.success('Lead deleted')
+                              fetchLeads(pagination.page)
+                            }}>
+                              Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
           </div>
-        )}
-      </Card>
+
+          {pagination.totalPages > 1 && (
+            <div className="flex items-center justify-between p-4 border-t border-border">
+              <div className="text-sm text-muted-foreground">
+                Showing {(pagination.page - 1) * pagination.limit + 1} - {Math.min(pagination.page * pagination.limit, pagination.total)} of {pagination.total}
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" disabled={pagination.page === 1} onClick={() => fetchLeads(pagination.page - 1)}>Previous</Button>
+                <Button variant="outline" size="sm" disabled={pagination.page === pagination.totalPages} onClick={() => fetchLeads(pagination.page + 1)}>Next</Button>
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* Grid View — leads grouped by date as folder cards */}
+      {viewMode === 'grid' && (
+        <div className="space-y-6">
+          {gridLoading ? (
+            <div className="flex flex-col items-center justify-center py-16 gap-3">
+              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+              <p className="text-sm text-muted-foreground">Loading all {pagination.total.toLocaleString()} leads...</p>
+            </div>
+          ) : allGridLeads.length === 0 ? (
+            <Card className="rounded-2xl">
+              <CardContent className="p-8 text-center text-muted-foreground">
+                No leads found. Import some leads to get started.
+              </CardContent>
+            </Card>
+          ) : expandedDate ? (
+            /* ── Expanded date group: full list with individual operations ── */
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Button variant="ghost" size="sm" onClick={() => setExpandedDate(null)}>
+                    <ChevronLeft className="w-4 h-4 mr-1" />
+                    Back
+                  </Button>
+                  <div>
+                    <h2 className="text-lg font-semibold flex items-center gap-2">
+                      <FolderOpen className="w-5 h-5" />
+                      {expandedDate}
+                    </h2>
+                    <p className="text-sm text-muted-foreground">{(groupedLeads[expandedDate] || []).length} leads</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={() => handleExportGroup(groupedLeads[expandedDate] || [])}>
+                    <Download className="w-4 h-4 mr-2" />
+                    Export Group
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => {
+                    setSelectedLeads((groupedLeads[expandedDate] || []).map(l => l.id))
+                    setBulkCampaignOpen(true)
+                  }}>
+                    <Target className="w-4 h-4 mr-2" />
+                    Add All to Campaign
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => {
+                    setSelectedLeads((groupedLeads[expandedDate] || []).map(l => l.id))
+                    setBulkTagOpen(true)
+                  }}>
+                    <Tag className="w-4 h-4 mr-2" />
+                    Tag All
+                  </Button>
+                </div>
+              </div>
+
+              <Card className="rounded-2xl overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-muted/50">
+                      <tr>
+                        <th className="p-3 text-left w-10">
+                          <Checkbox
+                            checked={(groupedLeads[expandedDate] || []).length > 0 && (groupedLeads[expandedDate] || []).every(l => selectedLeads.includes(l.id))}
+                            onCheckedChange={() => {
+                              const ids = (groupedLeads[expandedDate] || []).map(l => l.id)
+                              const allSelected = ids.every(id => selectedLeads.includes(id))
+                              if (allSelected) {
+                                setSelectedLeads(prev => prev.filter(id => !ids.includes(id)))
+                              } else {
+                                setSelectedLeads(prev => [...new Set([...prev, ...ids])])
+                              }
+                            }}
+                          />
+                        </th>
+                        <th className="p-3 text-left text-sm font-medium text-muted-foreground">Email</th>
+                        <th className="p-3 text-left text-sm font-medium text-muted-foreground">Name</th>
+                        <th className="p-3 text-left text-sm font-medium text-muted-foreground">Company</th>
+                        <th className="p-3 text-left text-sm font-medium text-muted-foreground">Phone</th>
+                        <th className="p-3 text-left text-sm font-medium text-muted-foreground">Status</th>
+                        <th className="p-3 text-left text-sm font-medium text-muted-foreground">Tags</th>
+                        <th className="p-3 text-right" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(groupedLeads[expandedDate] || []).map(lead => (
+                        <tr key={lead.id} className="border-t border-border hover:bg-muted/30 transition-colors">
+                          <td className="p-3">
+                            <Checkbox checked={selectedLeads.includes(lead.id)} onCheckedChange={() => toggleSelect(lead.id)} />
+                          </td>
+                          <td className="p-3 text-sm cursor-pointer hover:underline" onClick={() => onLeadClick(lead)}>{lead.email}</td>
+                          <td className="p-3 text-sm">{lead.firstName || lead.lastName ? `${lead.firstName || ''} ${lead.lastName || ''}`.trim() : '-'}</td>
+                          <td className="p-3 text-sm">{lead.company || '-'}</td>
+                          <td className="p-3 text-sm">{lead.phone || '-'}</td>
+                          <td className="p-3">
+                            <Badge variant={lead.status === 'active' ? 'default' : 'secondary'}>{lead.status || 'active'}</Badge>
+                          </td>
+                          <td className="p-3">
+                            <div className="flex gap-1 flex-wrap">
+                              {(lead.tags || []).slice(0, 2).map((tag, i) => (
+                                <Badge key={i} variant="secondary" className="text-xs">{tag}</Badge>
+                              ))}
+                              {(lead.tags || []).length > 2 && <Badge variant="outline" className="text-xs">+{lead.tags.length - 2}</Badge>}
+                            </div>
+                          </td>
+                          <td className="p-3 text-right">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="w-4 h-4" /></Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem onClick={() => onLeadClick(lead)}>
+                                  <Eye className="w-4 h-4 mr-2" />
+                                  View Details
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => onExport([lead.id])}>
+                                  <Download className="w-4 h-4 mr-2" />
+                                  Export Lead
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem className="text-destructive" onClick={async () => {
+                                  await authFetch(`${API_BASE}/leads/${lead.id}`, { method: 'DELETE' })
+                                  toast.success('Lead deleted')
+                                  setAllGridLeads(prev => prev.filter(l => l.id !== lead.id))
+                                }}>
+                                  <Trash2 className="w-4 h-4 mr-2" />
+                                  Delete
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            </div>
+          ) : (
+            /* ── Folder grid: date-grouped cards ── */
+            <>
+              <div className="flex items-center justify-between">
+                <p className="text-sm text-muted-foreground">
+                  {allGridLeads.length.toLocaleString()} leads across {Object.keys(groupedLeads).length} date group{Object.keys(groupedLeads).length !== 1 ? 's' : ''}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {Object.entries(groupedLeads)
+                  .sort(([a], [b]) => new Date(b) - new Date(a))
+                  .map(([date, groupLeads]) => {
+                    const activeCount = groupLeads.filter(l => l.status === 'active').length
+                    const companies = [...new Set(groupLeads.map(l => l.company).filter(Boolean))]
+
+                    return (
+                      <Card
+                        key={date}
+                        className="rounded-2xl hover:border-primary/40 transition-all group cursor-pointer"
+                        onClick={() => setExpandedDate(date)}
+                      >
+                        <CardContent className="p-0">
+                          {/* Folder header */}
+                          <div className="p-4 pb-3 flex items-start justify-between">
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-accent text-muted-foreground group-hover:bg-primary/10 group-hover:text-primary transition-colors">
+                                <FolderOpen className="w-5 h-5" />
+                              </div>
+                              <div>
+                                <p className="font-semibold text-sm leading-tight">{date}</p>
+                                <p className="text-xs text-muted-foreground mt-0.5">{groupLeads.length} lead{groupLeads.length !== 1 ? 's' : ''}</p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity"
+                                onClick={() => handleExportGroup(groupLeads)}
+                                title="Export this group"
+                              >
+                                <Download className="w-4 h-4" />
+                              </Button>
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button variant="ghost" size="icon" className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <MoreHorizontal className="w-4 h-4" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem onClick={() => setExpandedDate(date)}>
+                                    <Eye className="w-4 h-4 mr-2" />
+                                    Open Group
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => handleExportGroup(groupLeads)}>
+                                    <Download className="w-4 h-4 mr-2" />
+                                    Export Group
+                                  </DropdownMenuItem>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem onClick={() => {
+                                    setSelectedLeads(prev => [...new Set([...prev, ...groupLeads.map(l => l.id)])])
+                                    setBulkCampaignOpen(true)
+                                  }}>
+                                    <Target className="w-4 h-4 mr-2" />
+                                    Add to Campaign
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => {
+                                    setSelectedLeads(prev => [...new Set([...prev, ...groupLeads.map(l => l.id)])])
+                                    setBulkTagOpen(true)
+                                  }}>
+                                    <Tag className="w-4 h-4 mr-2" />
+                                    Add Tag
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </div>
+                          </div>
+
+                          {/* Stats row */}
+                          <div className="px-4 pb-3 flex items-center gap-2 flex-wrap">
+                            <Badge variant="default" className="text-xs">{activeCount} active</Badge>
+                            {groupLeads.length - activeCount > 0 && (
+                              <Badge variant="secondary" className="text-xs">{groupLeads.length - activeCount} other</Badge>
+                            )}
+                          </div>
+
+                          {/* Lead preview list */}
+                          <div className="border-t border-border">
+                            {groupLeads.slice(0, 3).map((lead, idx) => (
+                              <div
+                                key={lead.id}
+                                className={`px-4 py-2 flex items-center gap-3 text-sm ${idx < Math.min(groupLeads.length, 3) - 1 ? 'border-b border-border/50' : ''}`}
+                              >
+                                <div className="w-7 h-7 rounded-full bg-accent flex items-center justify-center text-xs font-medium flex-shrink-0">
+                                  {(lead.firstName || lead.email || '?').charAt(0).toUpperCase()}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="truncate font-medium text-xs">
+                                    {lead.firstName || lead.lastName ? `${lead.firstName || ''} ${lead.lastName || ''}`.trim() : lead.email}
+                                  </p>
+                                  <p className="truncate text-xs text-muted-foreground">{lead.company || lead.email}</p>
+                                </div>
+                              </div>
+                            ))}
+                            {groupLeads.length > 3 && (
+                              <div className="px-4 py-2 text-center border-t border-border/50">
+                                <span className="text-xs text-primary font-medium">View all {groupLeads.length} leads →</span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Companies footer */}
+                          {companies.length > 0 && (
+                            <div className="px-4 py-2 border-t border-border bg-muted/20">
+                              <div className="flex items-center gap-1 flex-wrap">
+                                <Building2 className="w-3 h-3 text-muted-foreground flex-shrink-0" />
+                                <span className="text-xs text-muted-foreground truncate">
+                                  {companies.slice(0, 3).join(', ')}{companies.length > 3 ? ` +${companies.length - 3}` : ''}
+                                </span>
+                              </div>
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
+                    )
+                  })}
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -999,9 +1687,9 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns, allTags }) {
 
   const fetchActivities = async () => {
     try {
-      const res = await fetch(`${API_BASE}/leads/${lead.id}/activity`)
+      const res = await authFetch(`${API_BASE}/leads/${lead.id}/activity`)
       const data = await res.json()
-      setActivities(data)
+      setActivities(Array.isArray(data) ? data : [])
     } catch (error) {
       console.error('Failed to fetch activities:', error)
     }
@@ -1009,7 +1697,7 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns, allTags }) {
 
   const handleSave = async () => {
     try {
-      const res = await fetch(`${API_BASE}/leads/${lead.id}`, {
+      const res = await authFetch(`${API_BASE}/leads/${lead.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData)
@@ -1027,7 +1715,7 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns, allTags }) {
     if (!newTag) return
     const updatedTags = [...(formData.tags || []), newTag]
     try {
-      const res = await fetch(`${API_BASE}/leads/${lead.id}`, {
+      const res = await authFetch(`${API_BASE}/leads/${lead.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tags: updatedTags })
@@ -1045,7 +1733,7 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns, allTags }) {
   const handleRemoveTag = async (tagToRemove) => {
     const updatedTags = (formData.tags || []).filter(t => t !== tagToRemove)
     try {
-      const res = await fetch(`${API_BASE}/leads/${lead.id}`, {
+      const res = await authFetch(`${API_BASE}/leads/${lead.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tags: updatedTags })
@@ -1062,7 +1750,7 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns, allTags }) {
   const handleAddToCampaign = async (campaignId) => {
     const updatedCampaigns = [...(formData.campaigns || []), campaignId]
     try {
-      const res = await fetch(`${API_BASE}/leads/${lead.id}`, {
+      const res = await authFetch(`${API_BASE}/leads/${lead.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ campaigns: updatedCampaigns })
@@ -1080,7 +1768,7 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns, allTags }) {
   const handleRemoveFromCampaign = async (campaignId) => {
     const updatedCampaigns = (formData.campaigns || []).filter(c => c !== campaignId)
     try {
-      const res = await fetch(`${API_BASE}/leads/${lead.id}`, {
+      const res = await authFetch(`${API_BASE}/leads/${lead.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ campaigns: updatedCampaigns })
@@ -1098,7 +1786,7 @@ function LeadDetailPage({ lead, onBack, onUpdate, campaigns, allTags }) {
     if (!newCustomField.name || !newCustomField.value) return
     const updatedFields = { ...formData.customFields, [newCustomField.name]: newCustomField.value }
     try {
-      const res = await fetch(`${API_BASE}/leads/${lead.id}`, {
+      const res = await authFetch(`${API_BASE}/leads/${lead.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ customFields: updatedFields })
@@ -1409,7 +2097,7 @@ function ListsPage({ lists, fetchLists, onListClick, setNewListOpen, campaigns, 
             </CardContent>
           </Card>
         ) : (
-          lists.map(list => (
+          (lists || []).map(list => (
             <Card key={list.id} className="rounded-2xl cursor-pointer hover:bg-muted/30 transition-colors" onClick={() => onListClick(list)}>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -1452,7 +2140,7 @@ function ListDetailPage({ list, onBack, campaigns, allTags, onExport }) {
   const fetchListLeads = async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/leads?listId=${list.id}&limit=100`)
+      const res = await authFetch(`${API_BASE}/leads?listId=${list.id}&limit=100`)
       const data = await res.json()
       setLeads(data.leads || [])
     } catch (error) {
@@ -1465,7 +2153,7 @@ function ListDetailPage({ list, onBack, campaigns, allTags, onExport }) {
   const handleDelete = async () => {
     if (!confirm('Are you sure you want to delete this list?')) return
     try {
-      await fetch(`${API_BASE}/lists/${list.id}`, { method: 'DELETE' })
+      await authFetch(`${API_BASE}/lists/${list.id}`, { method: 'DELETE' })
       toast.success('List deleted')
       onBack()
     } catch (error) {
@@ -1602,7 +2290,7 @@ function CampaignsPage({ campaigns, fetchCampaigns, onCampaignClick, setNewCampa
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem className="text-destructive" onClick={async () => {
-                          await fetch(`${API_BASE}/campaigns/${campaign.id}`, { method: 'DELETE' })
+                          await authFetch(`${API_BASE}/campaigns/${campaign.id}`, { method: 'DELETE' })
                           toast.success('Campaign deleted')
                           fetchCampaigns()
                         }}>Delete</DropdownMenuItem>
@@ -1624,21 +2312,117 @@ function CampaignDetailPage({ campaign, onBack, onAddLeads, onExport }) {
   const [leads, setLeads] = useState([])
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('leads')
+  const [enrichmentInfo, setEnrichmentInfo] = useState({ fields: [], stats: { totalLeads: 0, enrichedLeads: 0, pendingLeads: 0, partialLeads: 0, failedLeads: 0 }, templates: [] })
+  const [exportModalOpen, setExportModalOpen] = useState(false)
+  const [exportColumns, setExportColumns] = useState([])
+  const [exportOnlyEnriched, setExportOnlyEnriched] = useState(false)
+  const [enrichModalOpen, setEnrichModalOpen] = useState(false)
+  const [enrichFile, setEnrichFile] = useState(null)
+  const [enriching, setEnriching] = useState(false)
+  const enrichFileRef = useRef(null)
 
   useEffect(() => {
     fetchCampaignLeads()
+    fetchEnrichmentInfo()
   }, [campaign.id])
 
   const fetchCampaignLeads = async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/leads?campaignId=${campaign.id}&limit=100`)
+      const res = await authFetch(`${API_BASE}/leads?campaignId=${campaign.id}&limit=100`)
       const data = await res.json()
       setLeads(data.leads || [])
     } catch (error) {
       console.error('Failed to fetch campaign leads:', error)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const fetchEnrichmentInfo = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/campaigns/${campaign.id}/fields`)
+      const data = await res.json()
+      if (data && !data.error && data.fields) {
+        setEnrichmentInfo(data)
+        setExportColumns(data.fields || [])
+      }
+    } catch (error) {
+      console.error('Failed to fetch enrichment info:', error)
+    }
+  }
+
+  const handleExportWithColumns = () => {
+    const params = new URLSearchParams()
+    if (exportColumns.length > 0) params.set('columns', exportColumns.join(','))
+    if (exportOnlyEnriched) params.set('onlyEnriched', 'true')
+    params.set('useCampaignFields', 'true')
+    window.open(`${API_BASE}/campaigns/${campaign.id}/export?${params}`, '_blank')
+    setExportModalOpen(false)
+    toast.success('Export started')
+  }
+
+  const toggleExportColumn = (field) => {
+    setExportColumns(prev => prev.includes(field) ? prev.filter(f => f !== field) : [...prev, field])
+  }
+
+  const handleEnrichUpload = async () => {
+    if (!enrichFile) return
+    setEnriching(true)
+    try {
+      const enrichLeads = await new Promise((resolve, reject) => {
+        Papa.parse(enrichFile, {
+          header: true,
+          skipEmptyLines: true,
+          complete: (results) => {
+            const mapped = results.data
+              .filter(row => Object.values(row).some(v => v))
+              .map(row => {
+                const email = row.email || row.Email || row['email address'] || row['Email Address'] || ''
+                const customFields = {}
+                Object.entries(row).forEach(([key, value]) => {
+                  const lower = key.toLowerCase().trim()
+                  if (lower !== 'email' && lower !== 'email address' && value) {
+                    customFields[key] = value
+                  }
+                })
+                return { email, customFields }
+              })
+              .filter(l => l.email)
+            resolve(mapped)
+          },
+          error: reject
+        })
+      })
+
+      const res = await authFetch(`${API_BASE}/campaigns/${campaign.id}/enrich`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leads: enrichLeads, source: 'csv_import' })
+      })
+      const result = await res.json()
+      toast.success(`Enriched ${result.enriched} leads (${result.notFound} not found)`)
+      setEnrichModalOpen(false)
+      setEnrichFile(null)
+      fetchCampaignLeads()
+      fetchEnrichmentInfo()
+    } catch (error) {
+      toast.error('Enrichment failed: ' + error.message)
+    } finally {
+      setEnriching(false)
+    }
+  }
+
+  const { stats } = enrichmentInfo
+  const enrichmentPercent = stats.totalLeads > 0 ? Math.round((stats.enrichedLeads / stats.totalLeads) * 100) : 0
+
+  const enrichmentStatusColor = (status) => {
+    switch (status) {
+      case 'enriched': return 'default'
+      case 'pending': return 'secondary'
+      case 'partial': return 'outline'
+      case 'failed': return 'destructive'
+      default: return 'secondary'
     }
   }
 
@@ -1662,7 +2446,11 @@ function CampaignDetailPage({ campaign, onBack, onAddLeads, onExport }) {
           </div>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={onExport}>
+          <Button variant="outline" onClick={() => setEnrichModalOpen(true)}>
+            <FileSpreadsheet className="w-4 h-4 mr-2" />
+            Enrich Campaign
+          </Button>
+          <Button variant="outline" onClick={() => setExportModalOpen(true)}>
             <Download className="w-4 h-4 mr-2" />
             Export Leads
           </Button>
@@ -1672,6 +2460,57 @@ function CampaignDetailPage({ campaign, onBack, onAddLeads, onExport }) {
           </Button>
         </div>
       </div>
+
+      {/* Enrichment Stats */}
+      {stats.totalLeads > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <Card className="rounded-2xl">
+            <CardContent className="p-4 text-center">
+              <p className="text-2xl font-bold">{stats.totalLeads}</p>
+              <p className="text-xs text-muted-foreground">Total Leads</p>
+            </CardContent>
+          </Card>
+          <Card className="rounded-2xl border-green-500/20">
+            <CardContent className="p-4 text-center">
+              <p className="text-2xl font-bold text-green-600">{stats.enrichedLeads}</p>
+              <p className="text-xs text-muted-foreground">Enriched</p>
+            </CardContent>
+          </Card>
+          <Card className="rounded-2xl border-yellow-500/20">
+            <CardContent className="p-4 text-center">
+              <p className="text-2xl font-bold text-yellow-600">{stats.pendingLeads}</p>
+              <p className="text-xs text-muted-foreground">Pending</p>
+            </CardContent>
+          </Card>
+          <Card className="rounded-2xl border-blue-500/20">
+            <CardContent className="p-4 text-center">
+              <p className="text-2xl font-bold text-blue-600">{stats.partialLeads}</p>
+              <p className="text-xs text-muted-foreground">Partial</p>
+            </CardContent>
+          </Card>
+          <Card className="rounded-2xl border-red-500/20">
+            <CardContent className="p-4 text-center">
+              <p className="text-2xl font-bold text-red-600">{stats.failedLeads}</p>
+              <p className="text-xs text-muted-foreground">Failed</p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Enrichment fields summary */}
+      {enrichmentInfo.fields.length > 0 && (
+        <Card className="rounded-2xl">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-sm font-medium">Enrichment Fields:</span>
+              <span className="text-sm text-muted-foreground">({enrichmentInfo.fields.length} fields)</span>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {enrichmentInfo.fields.map(f => <Badge key={f} variant="outline" className="text-xs">{f}</Badge>)}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
@@ -1687,20 +2526,26 @@ function CampaignDetailPage({ campaign, onBack, onAddLeads, onExport }) {
                   <th className="p-4 text-left text-sm font-medium text-muted-foreground">Email</th>
                   <th className="p-4 text-left text-sm font-medium text-muted-foreground">Name</th>
                   <th className="p-4 text-left text-sm font-medium text-muted-foreground">Company</th>
+                  <th className="p-4 text-left text-sm font-medium text-muted-foreground">Enrichment</th>
                   <th className="p-4 text-left text-sm font-medium text-muted-foreground">Added</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={4} className="p-8 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-muted-foreground" /></td></tr>
+                  <tr><td colSpan={5} className="p-8 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-muted-foreground" /></td></tr>
                 ) : leads.length === 0 ? (
-                  <tr><td colSpan={4} className="p-8 text-center text-muted-foreground">No leads in this campaign yet.</td></tr>
+                  <tr><td colSpan={5} className="p-8 text-center text-muted-foreground">No leads in this campaign yet.</td></tr>
                 ) : (
                   leads.map(lead => (
                     <tr key={lead.id} className="border-t border-border">
                       <td className="p-4 text-sm">{lead.email}</td>
                       <td className="p-4 text-sm">{lead.firstName} {lead.lastName}</td>
                       <td className="p-4 text-sm">{lead.company || '-'}</td>
+                      <td className="p-4">
+                        <Badge variant={enrichmentStatusColor(lead.enrichmentStatus || 'pending')}>
+                          {lead.enrichmentStatus || 'pending'}
+                        </Badge>
+                      </td>
                       <td className="p-4 text-sm text-muted-foreground">{new Date(lead.createdAt).toLocaleDateString()}</td>
                     </tr>
                   ))
@@ -1716,12 +2561,112 @@ function CampaignDetailPage({ campaign, onBack, onAddLeads, onExport }) {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* Export Modal with Column Selection */}
+      <Dialog open={exportModalOpen} onOpenChange={setExportModalOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Export Campaign Leads</DialogTitle>
+            <DialogDescription>Select which columns to include in the CSV export.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="onlyEnriched"
+                checked={exportOnlyEnriched}
+                onCheckedChange={setExportOnlyEnriched}
+              />
+              <Label htmlFor="onlyEnriched">Only export enriched leads</Label>
+            </div>
+
+            <Separator />
+
+            <div>
+              <Label className="text-sm font-medium mb-2 block">Base Fields (always included)</Label>
+              <div className="flex flex-wrap gap-1">
+                {['email', 'first_name', 'last_name', 'company', 'domain', 'phone', 'status'].map(f => (
+                  <Badge key={f} variant="secondary" className="text-xs">{f}</Badge>
+                ))}
+              </div>
+            </div>
+
+            {enrichmentInfo.fields.length > 0 && (
+              <div>
+                <Label className="text-sm font-medium mb-2 block">Enrichment Fields (click to toggle)</Label>
+                <div className="flex flex-wrap gap-1">
+                  {enrichmentInfo.fields.map(f => (
+                    <Badge
+                      key={f}
+                      variant={exportColumns.includes(f) ? 'default' : 'outline'}
+                      className="text-xs cursor-pointer"
+                      onClick={() => toggleExportColumn(f)}
+                    >
+                      {f}
+                      {exportColumns.includes(f) && <Check className="w-3 h-3 ml-1" />}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => setExportColumns(enrichmentInfo.fields)}>Select All</Button>
+              <Button variant="outline" size="sm" onClick={() => setExportColumns([])}>Deselect All</Button>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setExportModalOpen(false)}>Cancel</Button>
+            <Button onClick={handleExportWithColumns}>
+              <Download className="w-4 h-4 mr-2" />
+              Export CSV
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Enrich Campaign Modal */}
+      <Dialog open={enrichModalOpen} onOpenChange={setEnrichModalOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Enrich Campaign Leads</DialogTitle>
+            <DialogDescription>
+              Upload a CSV with an email column and additional data columns. Only leads already in this campaign will be enriched.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div
+              className="border-2 border-dashed border-border rounded-xl p-8 text-center cursor-pointer hover:border-muted-foreground transition-colors"
+              onClick={() => enrichFileRef.current?.click()}
+            >
+              <input ref={enrichFileRef} type="file" accept=".csv" onChange={(e) => setEnrichFile(e.target.files?.[0] || null)} className="hidden" />
+              <FileSpreadsheet className="w-8 h-8 mx-auto text-muted-foreground mb-2" />
+              {enrichFile ? (
+                <p className="font-medium">{enrichFile.name} <span className="text-muted-foreground text-sm">({(enrichFile.size / 1024).toFixed(1)} KB)</span></p>
+              ) : (
+                <p className="text-muted-foreground">Drop CSV file or click to select</p>
+              )}
+            </div>
+            <div className="text-sm text-muted-foreground">
+              <p className="font-medium mb-1">CSV format:</p>
+              <p>Must include an <code className="bg-muted px-1 rounded">email</code> column. All other columns become enrichment fields.</p>
+              <p className="mt-1">Example: email, Title, Industry, Revenue</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setEnrichModalOpen(false); setEnrichFile(null) }}>Cancel</Button>
+            <Button onClick={handleEnrichUpload} disabled={!enrichFile || enriching}>
+              {enriching && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              Enrich Leads
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
 
 // Import Center Page — supports 500K+ leads via chunked client uploads
-function ImportCenterPage({ onImportComplete }) {
+function ImportCenterPage({ onImportComplete, campaigns = [] }) {
   const [step, setStep] = useState(1)
   const [file, setFile] = useState(null)
   const [csvData, setCsvData] = useState([])        // preview rows only
@@ -1731,6 +2676,7 @@ function ImportCenterPage({ onImportComplete }) {
   const [importing, setImporting] = useState(false)
   const [importResult, setImportResult] = useState(null)
   const [progress, setProgress] = useState({ percent: 0, sent: 0, total: 0, inserted: 0, updated: 0, skipped: 0, errors: 0, currentChunk: 0, totalChunks: 0, speed: 0, eta: '' })
+  const [selectedCampaignId, setSelectedCampaignId] = useState('none')
   const fileInputRef = useRef(null)
   const abortRef = useRef(false)
 
@@ -1849,10 +2795,10 @@ function ImportCenterPage({ onImportComplete }) {
         const chunkIndex = Math.floor(i / CLIENT_CHUNK_SIZE) + 1
         const chunk = allLeads.slice(i, i + CLIENT_CHUNK_SIZE)
 
-        const res = await fetch(`${API_BASE}/leads/bulk`, {
+        const res = await authFetch(`${API_BASE}/leads/bulk`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ leads: chunk, fileName: file?.name || 'csv-import' })
+          body: JSON.stringify({ leads: chunk, fileName: file?.name || 'csv-import', ...(selectedCampaignId && selectedCampaignId !== 'none' && { campaignId: selectedCampaignId, enrichmentSource: 'csv_import' }) })
         })
 
         const result = await res.json()
@@ -1909,6 +2855,7 @@ function ImportCenterPage({ onImportComplete }) {
     setColumnMapping({})
     setImportResult(null)
     setTotalRowCount(0)
+    setSelectedCampaignId('none')
     setProgress({ percent: 0, sent: 0, total: 0, inserted: 0, updated: 0, skipped: 0, errors: 0, currentChunk: 0, totalChunks: 0, speed: 0, eta: '' })
     abortRef.current = false
   }
@@ -1979,6 +2926,36 @@ function ImportCenterPage({ onImportComplete }) {
             </CardContent>
           </Card>
 
+          {/* Campaign selector for enrichment */}
+          <Card className="rounded-2xl">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Target className="w-5 h-5" />
+                Assign to Campaign (Optional)
+              </CardTitle>
+              <CardDescription>Link imported leads and their custom fields to a campaign. Enrichment data will be campaign-specific.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Select value={selectedCampaignId} onValueChange={setSelectedCampaignId}>
+                <SelectTrigger className="w-full max-w-sm">
+                  <SelectValue placeholder="No campaign — import as global leads" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No Campaign</SelectItem>
+                  {campaigns.map(c => (
+                    <SelectItem key={c.id} value={c.id}>{c.name} ({c.leadsCount || 0} leads)</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selectedCampaignId && selectedCampaignId !== 'none' && (
+                <p className="text-sm text-muted-foreground mt-2 flex items-center gap-1">
+                  <CheckCircle2 className="w-4 h-4 text-green-500" />
+                  Custom fields will be stored as campaign-specific enrichment data. Enrichment status will be tracked.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
           <Card className="rounded-2xl">
             <CardHeader>
               <CardTitle>Map Columns</CardTitle>
@@ -2024,13 +3001,17 @@ function ImportCenterPage({ onImportComplete }) {
             </CardContent>
           </Card>
 
-          <div className="flex gap-4 items-center">
+          <div className="flex gap-4 items-center flex-wrap">
             <Button variant="outline" onClick={resetImport}>Back</Button>
             <Button onClick={handleImport} disabled={!Object.values(columnMapping).includes('email')} className="min-w-[200px]">
               <Upload className="w-4 h-4 mr-2" />
               Import {totalRowCount.toLocaleString()} Leads
+              {selectedCampaignId && selectedCampaignId !== 'none' && ' + Enrich'}
             </Button>
-            <span className="text-sm text-muted-foreground">Will upload in {Math.ceil(totalRowCount / CLIENT_CHUNK_SIZE)} batches of {CLIENT_CHUNK_SIZE.toLocaleString()}</span>
+            <span className="text-sm text-muted-foreground">
+              Will upload in {Math.ceil(totalRowCount / CLIENT_CHUNK_SIZE)} batches of {CLIENT_CHUNK_SIZE.toLocaleString()}
+              {selectedCampaignId && selectedCampaignId !== 'none' && ` → ${campaigns.find(c => c.id === selectedCampaignId)?.name || 'Campaign'}`}
+            </span>
           </div>
         </div>
       )}
@@ -2148,9 +3129,9 @@ function ImportLogsSection() {
 
   const fetchLogs = async () => {
     try {
-      const res = await fetch(`${API_BASE}/import-logs`)
+      const res = await authFetch(`${API_BASE}/import-logs`)
       const data = await res.json()
-      setLogs(data)
+      setLogs(Array.isArray(data) ? data : [])
     } catch (error) {
       console.error('Failed to fetch import logs:', error)
     } finally {
@@ -2204,55 +3185,335 @@ function ImportLogsSection() {
   )
 }
 
-// Team Page
-function TeamPage() {
-  const teamMembers = [
-    { id: 1, name: 'Admin User', email: 'admin@leadOS.com', role: 'Admin', status: 'Active' },
-    { id: 2, name: 'John Doe', email: 'john@leadOS.com', role: 'Editor', status: 'Active' },
-    { id: 3, name: 'Jane Smith', email: 'jane@leadOS.com', role: 'Viewer', status: 'Invited' },
-  ]
+// Team Page (Admin only)
+function TeamPage({ authUser }) {
+  const [users, setUsers] = useState([])
+  const [userStats, setUserStats] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [addUserOpen, setAddUserOpen] = useState(false)
+  const [editingUser, setEditingUser] = useState(null)
+  const [newUser, setNewUser] = useState({ name: '', email: '', password: '', role: 'user' })
+  const [addLoading, setAddLoading] = useState(false)
+  const [activeTab, setActiveTab] = useState('members')
+
+  const fetchUsers = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/users`)
+      if (res.ok) {
+        const data = await res.json()
+        setUsers(Array.isArray(data) ? data : [])
+      }
+    } catch (err) { console.error('Failed to fetch users:', err) }
+    finally { setLoading(false) }
+  }
+
+  const fetchStats = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/users/stats`)
+      if (res.ok) {
+        const data = await res.json()
+        setUserStats(Array.isArray(data) ? data : [])
+      }
+    } catch (err) { console.error('Failed to fetch user stats:', err) }
+  }
+
+  useEffect(() => { fetchUsers(); fetchStats() }, [])
+
+  const handleAddUser = async () => {
+    if (!newUser.name || !newUser.email || !newUser.password) {
+      toast.error('All fields are required'); return
+    }
+    setAddLoading(true)
+    try {
+      const res = await authFetch(`${API_BASE}/users`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newUser)
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
+      toast.success(`User ${data.name} created`)
+      setAddUserOpen(false)
+      setNewUser({ name: '', email: '', password: '', role: 'user' })
+      fetchUsers()
+    } catch (err) {
+      toast.error(err.message || 'Failed to create user')
+    } finally { setAddLoading(false) }
+  }
+
+  const handleUpdateUser = async (userId, updates) => {
+    try {
+      const res = await authFetch(`${API_BASE}/users/${userId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
+      toast.success('User updated')
+      fetchUsers()
+      setEditingUser(null)
+    } catch (err) {
+      toast.error(err.message || 'Failed to update user')
+    }
+  }
+
+  const handleToggleSuspend = async (user) => {
+    const newStatus = user.status === 'active' ? 'suspended' : 'active'
+    await handleUpdateUser(user.id, { status: newStatus })
+  }
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Team</h1>
-          <p className="text-muted-foreground">Manage team access and permissions</p>
+          <h1 className="text-2xl font-semibold flex items-center gap-2">
+            <ShieldCheck className="w-6 h-6" />
+            Team Management
+          </h1>
+          <p className="text-muted-foreground">Manage users, roles, and track extraction activity</p>
         </div>
-        <Button><Plus className="w-4 h-4 mr-2" />Invite Member</Button>
+        <Button onClick={() => setAddUserOpen(true)}>
+          <UserPlus className="w-4 h-4 mr-2" />
+          Add User
+        </Button>
       </div>
 
-      <Card className="rounded-2xl overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-muted/50">
-            <tr>
-              <th className="p-4 text-left text-sm font-medium text-muted-foreground">Member</th>
-              <th className="p-4 text-left text-sm font-medium text-muted-foreground">Role</th>
-              <th className="p-4 text-left text-sm font-medium text-muted-foreground">Status</th>
-              <th className="p-4" />
-            </tr>
-          </thead>
-          <tbody>
-            {teamMembers.map(member => (
-              <tr key={member.id} className="border-t border-border">
-                <td className="p-4">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-accent flex items-center justify-center">{member.name.charAt(0)}</div>
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList>
+          <TabsTrigger value="members">Members ({users.length})</TabsTrigger>
+          <TabsTrigger value="activity">Extraction Stats</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="members" className="mt-6">
+          <Card className="rounded-2xl overflow-hidden">
+            <table className="w-full">
+              <thead className="bg-muted/50">
+                <tr>
+                  <th className="p-4 text-left text-sm font-medium text-muted-foreground">Member</th>
+                  <th className="p-4 text-left text-sm font-medium text-muted-foreground">Role</th>
+                  <th className="p-4 text-left text-sm font-medium text-muted-foreground">Status</th>
+                  <th className="p-4 text-left text-sm font-medium text-muted-foreground">Extractions</th>
+                  <th className="p-4 text-left text-sm font-medium text-muted-foreground">Last Login</th>
+                  <th className="p-4 text-left text-sm font-medium text-muted-foreground">Joined</th>
+                  <th className="p-4" />
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr><td colSpan={7} className="p-8 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-muted-foreground" /></td></tr>
+                ) : users.length === 0 ? (
+                  <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">No users found.</td></tr>
+                ) : users.map(user => (
+                  <tr key={user.id} className="border-t border-border">
+                    <td className="p-4">
+                      <div className="flex items-center gap-3">
+                        <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-medium ${user.status === 'suspended' ? 'bg-destructive/10 text-destructive' : 'bg-accent'}`}>
+                          {user.name.charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                          <div className="font-medium flex items-center gap-2">
+                            {user.name}
+                            {user.id === authUser.id && <Badge variant="outline" className="text-[10px]">You</Badge>}
+                          </div>
+                          <div className="text-sm text-muted-foreground">{user.email}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="p-4">
+                      <Badge variant={user.role === 'admin' ? 'default' : 'secondary'} className="gap-1">
+                        {user.role === 'admin' && <Shield className="w-3 h-3" />}
+                        {user.role}
+                      </Badge>
+                    </td>
+                    <td className="p-4">
+                      <Badge variant={user.status === 'active' ? 'default' : 'destructive'}>
+                        {user.status}
+                      </Badge>
+                    </td>
+                    <td className="p-4 text-sm font-medium">{user.extractionCount || 0}</td>
+                    <td className="p-4 text-sm text-muted-foreground">
+                      {user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleDateString() : 'Never'}
+                    </td>
+                    <td className="p-4 text-sm text-muted-foreground">
+                      {new Date(user.createdAt).toLocaleDateString()}
+                    </td>
+                    <td className="p-4 text-right">
+                      {user.id !== authUser.id && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon"><MoreHorizontal className="w-4 h-4" /></Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => setEditingUser(user)}>
+                              <Settings className="w-4 h-4 mr-2" />
+                              Edit User
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleUpdateUser(user.id, { role: user.role === 'admin' ? 'user' : 'admin' })}>
+                              <Shield className="w-4 h-4 mr-2" />
+                              {user.role === 'admin' ? 'Remove Admin' : 'Make Admin'}
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              onClick={() => handleToggleSuspend(user)}
+                              className={user.status === 'active' ? 'text-destructive' : 'text-green-600'}
+                            >
+                              {user.status === 'active' ? (
+                                <><Ban className="w-4 h-4 mr-2" />Suspend User</>
+                              ) : (
+                                <><UserCheck className="w-4 h-4 mr-2" />Reactivate User</>
+                              )}
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="activity" className="mt-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {userStats.length === 0 ? (
+              <Card className="rounded-2xl col-span-full">
+                <CardContent className="p-8 text-center text-muted-foreground">
+                  No extraction stats yet.
+                </CardContent>
+              </Card>
+            ) : userStats.map(stat => (
+              <Card key={stat.id} className="rounded-2xl">
+                <CardContent className="p-6">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-full bg-accent flex items-center justify-center text-sm font-medium">
+                      {stat.name?.charAt(0).toUpperCase() || '?'}
+                    </div>
                     <div>
-                      <div className="font-medium">{member.name}</div>
-                      <div className="text-sm text-muted-foreground">{member.email}</div>
+                      <div className="font-medium">{stat.name}</div>
+                      <div className="text-xs text-muted-foreground">{stat.email}</div>
+                    </div>
+                    <Badge variant={stat.role === 'admin' ? 'default' : 'secondary'} className="ml-auto text-[10px]">{stat.role}</Badge>
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="text-center p-2 rounded-lg bg-accent/50">
+                      <p className="text-lg font-bold">{parseInt(stat.leads_extracted) || 0}</p>
+                      <p className="text-[10px] text-muted-foreground">Leads Extracted</p>
+                    </div>
+                    <div className="text-center p-2 rounded-lg bg-accent/50">
+                      <p className="text-lg font-bold">{parseInt(stat.total_actions) || 0}</p>
+                      <p className="text-[10px] text-muted-foreground">Total Actions</p>
+                    </div>
+                    <div className="text-center p-2 rounded-lg bg-accent/50">
+                      <p className="text-lg font-bold">{parseInt(stat.imports_done) || 0}</p>
+                      <p className="text-[10px] text-muted-foreground">Imports</p>
                     </div>
                   </div>
-                </td>
-                <td className="p-4"><Badge variant="outline">{member.role}</Badge></td>
-                <td className="p-4"><Badge variant={member.status === 'Active' ? 'default' : 'secondary'}>{member.status}</Badge></td>
-                <td className="p-4 text-right"><Button variant="ghost" size="icon"><MoreHorizontal className="w-4 h-4" /></Button></td>
-              </tr>
+                </CardContent>
+              </Card>
             ))}
-          </tbody>
-        </table>
-      </Card>
+          </div>
+        </TabsContent>
+      </Tabs>
+
+      {/* Add User Dialog */}
+      <Dialog open={addUserOpen} onOpenChange={setAddUserOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add New User</DialogTitle>
+            <DialogDescription>Create a new team member account</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Full Name *</Label>
+              <Input value={newUser.name} onChange={(e) => setNewUser({ ...newUser, name: e.target.value })} placeholder="John Doe" />
+            </div>
+            <div className="space-y-2">
+              <Label>Email *</Label>
+              <Input value={newUser.email} onChange={(e) => setNewUser({ ...newUser, email: e.target.value })} placeholder="john@example.com" type="email" />
+            </div>
+            <div className="space-y-2">
+              <Label>Password *</Label>
+              <Input value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} placeholder="Min 6 characters" type="password" />
+            </div>
+            <div className="space-y-2">
+              <Label>Role</Label>
+              <Select value={newUser.role} onValueChange={(v) => setNewUser({ ...newUser, role: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="user">User</SelectItem>
+                  <SelectItem value="admin">Admin</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddUserOpen(false)}>Cancel</Button>
+            <Button onClick={handleAddUser} disabled={addLoading}>
+              {addLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              Create User
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit User Dialog */}
+      <Dialog open={!!editingUser} onOpenChange={(open) => !open && setEditingUser(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit User</DialogTitle>
+            <DialogDescription>Update user details for {editingUser?.name}</DialogDescription>
+          </DialogHeader>
+          {editingUser && <EditUserForm user={editingUser} onSave={handleUpdateUser} onCancel={() => setEditingUser(null)} />}
+        </DialogContent>
+      </Dialog>
     </div>
+  )
+}
+
+function EditUserForm({ user, onSave, onCancel }) {
+  const [form, setForm] = useState({ name: user.name, role: user.role, password: '' })
+  const [saving, setSaving] = useState(false)
+
+  const handleSubmit = async () => {
+    setSaving(true)
+    const updates = { name: form.name, role: form.role }
+    if (form.password) updates.password = form.password
+    await onSave(user.id, updates)
+    setSaving(false)
+  }
+
+  return (
+    <>
+      <div className="space-y-4 py-4">
+        <div className="space-y-2">
+          <Label>Name</Label>
+          <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+        </div>
+        <div className="space-y-2">
+          <Label>Role</Label>
+          <Select value={form.role} onValueChange={(v) => setForm({ ...form, role: v })}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="user">User</SelectItem>
+              <SelectItem value="admin">Admin</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-2">
+          <Label>New Password (leave blank to keep current)</Label>
+          <Input value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} type="password" placeholder="••••••" />
+        </div>
+      </div>
+      <DialogFooter>
+        <Button variant="outline" onClick={onCancel}>Cancel</Button>
+        <Button onClick={handleSubmit} disabled={saving}>
+          {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+          Save Changes
+        </Button>
+      </DialogFooter>
+    </>
   )
 }
 
@@ -2316,7 +3577,7 @@ function NewLeadDialog({ open, onOpenChange, onSuccess }) {
     if (!formData.email) { toast.error('Email is required'); return }
     setLoading(true)
     try {
-      await fetch(`${API_BASE}/leads`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formData) })
+      await authFetch(`${API_BASE}/leads`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formData) })
       toast.success('Lead created')
       onOpenChange(false)
       setFormData({ email: '', firstName: '', lastName: '', company: '', domain: '', phone: '', linkedinUrl: '', source: '', status: 'active' })
@@ -2404,7 +3665,7 @@ function NewCampaignDialog({ open, onOpenChange, onSuccess }) {
     if (!formData.name) { toast.error('Campaign name is required'); return }
     setLoading(true)
     try {
-      await fetch(`${API_BASE}/campaigns`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formData) })
+      await authFetch(`${API_BASE}/campaigns`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formData) })
       toast.success('Campaign created')
       onOpenChange(false)
       setFormData({ name: '', description: '', status: 'active' })
@@ -2461,7 +3722,7 @@ function NewListDialog({ open, onOpenChange, onSuccess, campaigns, allTags }) {
     if (!formData.name) { toast.error('List name is required'); return }
     setLoading(true)
     try {
-      await fetch(`${API_BASE}/lists`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formData) })
+      await authFetch(`${API_BASE}/lists`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formData) })
       toast.success('List created')
       onOpenChange(false)
       setFormData({ name: '', description: '', filters: { dateFrom: '', dateTo: '', tags: [], campaigns: [] } })
@@ -2514,7 +3775,7 @@ function NewListDialog({ open, onOpenChange, onSuccess, campaigns, allTags }) {
             <div className="space-y-2">
               <Label className="flex items-center gap-2"><Tags className="w-4 h-4" />Filter by Tags</Label>
               <div className="flex flex-wrap gap-2">
-                {allTags.map(tag => (
+                {(allTags || []).map(tag => (
                   <Badge
                     key={tag}
                     variant={formData.filters.tags.includes(tag) ? 'default' : 'outline'}
@@ -2590,7 +3851,7 @@ function AddLeadsToCampaignDialog({ open, onOpenChange, campaign, onSuccess }) {
   const fetchLeads = async () => {
     try {
       const params = new URLSearchParams({ limit: '50', ...(search && { search }) })
-      const res = await fetch(`${API_BASE}/leads?${params}`)
+      const res = await authFetch(`${API_BASE}/leads?${params}`)
       const data = await res.json()
       setLeads((data.leads || []).filter(l => !(l.campaigns || []).includes(campaign?.id)))
     } catch (error) {
@@ -2602,7 +3863,7 @@ function AddLeadsToCampaignDialog({ open, onOpenChange, campaign, onSuccess }) {
     if (selectedLeads.length === 0 || !campaign) return
     setLoading(true)
     try {
-      await fetch(`${API_BASE}/leads/bulk-action`, {
+      await authFetch(`${API_BASE}/leads/bulk-action`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'addToCampaign', leadIds: selectedLeads, data: { campaignId: campaign.id } })

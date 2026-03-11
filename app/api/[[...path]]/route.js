@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { query, getClient, ensureInitialized } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
+import { signToken, getUserFromRequest, requireAuth, requireAdmin } from '@/lib/auth';
+import bcrypt from 'bcryptjs';
 
 // Route segment config for App Router
 export const maxDuration = 300;
@@ -168,6 +170,60 @@ export async function GET(request, { params }) {
       }
     }
 
+    // ── Auth: Get current user ──
+    if (pathStr === 'auth/me') {
+      const user = await getUserFromRequest(request);
+      if (!user) {
+        return NextResponse.json({ error: 'Not authenticated' }, { status: 401, headers: corsHeaders() });
+      }
+      return NextResponse.json({
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        status: user.status
+      }, { headers: corsHeaders() });
+    }
+
+    // ── Admin: List all users ──
+    if (pathStr === 'users') {
+      const auth = await requireAdmin(request);
+      if (auth.error) {
+        return NextResponse.json({ error: auth.error }, { status: auth.status, headers: corsHeaders() });
+      }
+      const result = await query(
+        `SELECT id, email, name, role, status, extraction_count, last_login_at, created_at, updated_at
+         FROM users ORDER BY created_at DESC`
+      );
+      return NextResponse.json(result.rows.map(u => ({
+        id: u.id,
+        email: u.email,
+        name: u.name,
+        role: u.role,
+        status: u.status,
+        extractionCount: u.extraction_count || 0,
+        lastLoginAt: u.last_login_at,
+        createdAt: u.created_at,
+        updatedAt: u.updated_at
+      })), { headers: corsHeaders() });
+    }
+
+    // ── Admin: Get user stats (extraction leaderboard) ──
+    if (pathStr === 'users/stats') {
+      const auth = await requireAdmin(request);
+      if (auth.error) {
+        return NextResponse.json({ error: auth.error }, { status: auth.status, headers: corsHeaders() });
+      }
+      const result = await query(`
+        SELECT u.id, u.name, u.email, u.role, u.extraction_count,
+          (SELECT COUNT(*) FROM leads WHERE extracted_by = u.id) as leads_extracted,
+          (SELECT COUNT(*) FROM activities WHERE user_id = u.id) as total_actions,
+          (SELECT COUNT(*) FROM import_logs WHERE created_by = u.id) as imports_done
+        FROM users u WHERE u.status = 'active' ORDER BY leads_extracted DESC
+      `);
+      return NextResponse.json(result.rows, { headers: corsHeaders() });
+    }
+
     // ── Dashboard stats ──
     if (pathStr === 'dashboard/stats') {
       const [totalLeads, totalCampaigns, leadsToday, activeCampaigns] = await Promise.all([
@@ -193,7 +249,8 @@ export async function GET(request, { params }) {
     // ── Get leads (paginated, searchable, filterable) ──
     if (pathStr === 'leads') {
       const page = Math.max(1, parseInt(searchParams.get('page') || '1'));
-      const limit = Math.min(100, Math.max(1, parseInt(searchParams.get('limit') || '20')));
+      const maxLimit = searchParams.get('grid') === '1' ? 10000 : 100;
+      const limit = Math.min(maxLimit, Math.max(1, parseInt(searchParams.get('limit') || '20')));
       const search = (searchParams.get('search') || '').trim();
       const sortByInput = searchParams.get('sortBy') || 'created_at';
       const sortOrder = searchParams.get('sortOrder') === 'asc' ? 'ASC' : 'DESC';
@@ -250,16 +307,57 @@ export async function GET(request, { params }) {
         }
       }
 
-      const countResult = await query(`SELECT COUNT(*) as count FROM leads ${whereClause}`, qp);
-      const total = parseInt(countResult.rows[0].count);
-
       const offset = (page - 1) * limit;
+      // Single query: fetch leads + total count via window function
+      // When filtering by campaign, join to get enrichment_status
+      let selectExtra = '';
+      let fromClause = 'FROM leads';
+      if (campaignId) {
+        selectExtra = ', cl_join.enrichment_status as _enrichment_status, cl_join.enriched_at as _enriched_at';
+        // Replace the EXISTS subquery with a JOIN approach
+        // Remove the EXISTS clause we added earlier and use JOIN instead
+        whereClause = whereClause.replace(
+          ` AND EXISTS (SELECT 1 FROM campaign_leads cl WHERE cl.lead_id = leads.id AND cl.campaign_id = $${qp.indexOf(campaignId) + 1})`,
+          ''
+        );
+        fromClause = `FROM leads INNER JOIN campaign_leads cl_join ON cl_join.lead_id = leads.id AND cl_join.campaign_id = $${qp.indexOf(campaignId) + 1}`;
+      }
+
+      const selectColumns = campaignId
+        ? LEAD_COLUMNS.split(', ').map(c => `leads.${c}`).join(', ')
+        : LEAD_COLUMNS;
+      const orderColumn = campaignId ? `leads.${sortColumn}` : sortColumn;
+
       const leadsResult = await query(
-        `SELECT ${LEAD_COLUMNS} FROM leads ${whereClause} ORDER BY ${sortColumn} ${sortOrder} LIMIT $${pi} OFFSET $${pi + 1}`,
+        `SELECT ${selectColumns}${selectExtra}, COUNT(*) OVER() as _total ${fromClause} ${whereClause} ORDER BY ${orderColumn} ${sortOrder} LIMIT $${pi} OFFSET $${pi + 1}`,
         [...qp, limit, offset]
       );
 
-      const enriched = await enrichLeadsBatch(leadsResult.rows);
+      const total = leadsResult.rows.length > 0 ? parseInt(leadsResult.rows[0]._total) : 0;
+      // Remove _total from rows before enrichment
+      leadsResult.rows.forEach(r => delete r._total);
+
+      // Skip enrichment if client says so (list view doesn't need custom fields)
+      const skipEnrich = searchParams.get('lean') === '1';
+      const enriched = skipEnrich
+        ? leadsResult.rows.map(r => {
+            const lead = transformLead(r, {}, []);
+            if (r._enrichment_status) lead.enrichmentStatus = r._enrichment_status;
+            delete r._enrichment_status;
+            delete r._enriched_at;
+            return lead;
+          })
+        : await (async () => {
+            const enrichmentMap = {};
+            leadsResult.rows.forEach(r => {
+              if (r._enrichment_status) enrichmentMap[r.id] = r._enrichment_status;
+              delete r._enrichment_status;
+              delete r._enriched_at;
+            });
+            const batch = await enrichLeadsBatch(leadsResult.rows);
+            batch.forEach(l => { if (enrichmentMap[l.id]) l.enrichmentStatus = enrichmentMap[l.id]; });
+            return batch;
+          })();
 
       return NextResponse.json({
         leads: enriched,
@@ -391,24 +489,119 @@ export async function GET(request, { params }) {
       return NextResponse.json(result.rows.map(transformCampaign), { headers: corsHeaders() });
     }
 
-    // ── Export campaign leads ──
+    // ── Get campaign enrichment fields ──
+    if (pathStr.match(/^campaigns\/[^/]+\/fields$/)) {
+      const campaignId = pathStr.split('/')[1];
+
+      // Get all unique field names for this campaign's enrichment data
+      const fieldsRes = await query(
+        `SELECT DISTINCT field_name FROM lead_custom_fields WHERE campaign_id = $1 ORDER BY field_name`,
+        [campaignId]
+      );
+
+      // Get enrichment stats
+      const statsRes = await query(
+        `SELECT
+          COUNT(*) as total_leads,
+          COUNT(CASE WHEN enrichment_status = 'enriched' THEN 1 END) as enriched_leads,
+          COUNT(CASE WHEN enrichment_status = 'pending' THEN 1 END) as pending_leads,
+          COUNT(CASE WHEN enrichment_status = 'partial' THEN 1 END) as partial_leads,
+          COUNT(CASE WHEN enrichment_status = 'failed' THEN 1 END) as failed_leads
+         FROM campaign_leads WHERE campaign_id = $1`,
+        [campaignId]
+      );
+
+      // Get field templates if defined
+      const templatesRes = await query(
+        `SELECT field_name, field_order, is_required FROM campaign_field_templates WHERE campaign_id = $1 ORDER BY field_order`,
+        [campaignId]
+      );
+
+      const stats = statsRes.rows[0] || {};
+      return NextResponse.json({
+        fields: fieldsRes.rows.map(r => r.field_name),
+        templates: templatesRes.rows,
+        stats: {
+          totalLeads: parseInt(stats.total_leads) || 0,
+          enrichedLeads: parseInt(stats.enriched_leads) || 0,
+          pendingLeads: parseInt(stats.pending_leads) || 0,
+          partialLeads: parseInt(stats.partial_leads) || 0,
+          failedLeads: parseInt(stats.failed_leads) || 0
+        }
+      }, { headers: corsHeaders() });
+    }
+
+    // ── Export campaign leads (with column selection) ──
     if (pathStr.match(/^campaigns\/[^/]+\/export$/)) {
       const campaignId = pathStr.split('/')[1];
+      const columnsParam = searchParams.get('columns');  // Comma-separated column names
+      const includeBase = searchParams.get('includeBase') !== 'false';  // Default true
+      const onlyEnriched = searchParams.get('onlyEnriched') === 'true';  // Default false
+      const useCampaignFields = searchParams.get('useCampaignFields') === 'true';  // Use campaign-specific fields only
+
+      // Build query with optional enrichment filter
+      let whereClause = 'WHERE cl.campaign_id = $1';
+      const qp = [campaignId];
+      let pi = 2;
+
+      if (onlyEnriched) {
+        whereClause += ` AND cl.enrichment_status = 'enriched'`;
+      }
+
       const result = await query(
-        `SELECT l.${LEAD_COLUMNS.split(', ').map(c => 'l.' + c).join(', ')}
+        `SELECT l.${LEAD_COLUMNS.split(', ').map(c => 'l.' + c).join(', ')}, cl.enrichment_status
          FROM leads l JOIN campaign_leads cl ON cl.lead_id = l.id
-         WHERE cl.campaign_id = $1`, [campaignId]
+         ${whereClause}`, qp
       );
 
       const batchIds = result.rows.map(r => r.id);
-      const cfRes = batchIds.length > 0
-        ? await query('SELECT lead_id, field_name, field_value FROM lead_custom_fields WHERE lead_id = ANY($1)', [batchIds])
+
+      // Determine which custom fields to include
+      let customFieldKeys = [];
+      if (columnsParam) {
+        // User specified columns - use those
+        customFieldKeys = columnsParam.split(',').map(c => c.trim()).filter(c => c);
+      } else if (useCampaignFields) {
+        // Use only campaign-specific fields
+        const cfKeysRes = await query(
+          `SELECT DISTINCT field_name FROM lead_custom_fields WHERE campaign_id = $1 AND lead_id = ANY($2)`,
+          [campaignId, batchIds]
+        );
+        customFieldKeys = cfKeysRes.rows.map(r => r.field_name);
+      } else {
+        // Check for field templates first
+        const templatesRes = await query(
+          `SELECT field_name FROM campaign_field_templates WHERE campaign_id = $1 ORDER BY field_order`,
+          [campaignId]
+        );
+        if (templatesRes.rows.length > 0) {
+          customFieldKeys = templatesRes.rows.map(r => r.field_name);
+        } else {
+          // Fall back to all campaign-specific fields
+          const cfKeysRes = batchIds.length > 0
+            ? await query(`SELECT DISTINCT field_name FROM lead_custom_fields WHERE campaign_id = $1 AND lead_id = ANY($2)`, [campaignId, batchIds])
+            : { rows: [] };
+          customFieldKeys = cfKeysRes.rows.map(r => r.field_name);
+        }
+      }
+
+      // Fetch custom fields (campaign-specific only)
+      const cfRes = batchIds.length > 0 && customFieldKeys.length > 0
+        ? await query(
+            `SELECT lead_id, field_name, field_value FROM lead_custom_fields
+             WHERE campaign_id = $1 AND lead_id = ANY($2) AND field_name = ANY($3)`,
+            [campaignId, batchIds, customFieldKeys]
+          )
         : { rows: [] };
+
       const cfMap = {};
-      cfRes.rows.forEach(r => { if (!cfMap[r.lead_id]) cfMap[r.lead_id] = {}; cfMap[r.lead_id][r.field_name] = r.field_value; });
+      cfRes.rows.forEach(r => {
+        if (!cfMap[r.lead_id]) cfMap[r.lead_id] = {};
+        cfMap[r.lead_id][r.field_name] = r.field_value;
+      });
       result.rows.forEach(r => { r._cf = cfMap[r.id] || {}; });
 
-      const customFieldKeys = [...new Set(cfRes.rows.map(r => r.field_name))];
+      // Generate CSV with selected columns
       const csv = leadsToCSV(result.rows, customFieldKeys);
 
       const campaignResult = await query('SELECT name FROM campaigns WHERE id = $1', [campaignId]);
@@ -489,16 +682,108 @@ export async function POST(request, { params }) {
   try {
     const body = await request.json();
 
+    // ── Auth: Login ──
+    if (pathStr === 'auth/login') {
+      try {
+        const emailNorm = normalizeEmail(body.email);
+        if (!emailNorm || !body.password) {
+          return NextResponse.json({ error: 'Email and password are required' }, { status: 400, headers: corsHeaders() });
+        }
+        const result = await query('SELECT * FROM users WHERE email_normalized = $1', [emailNorm]);
+        if (result.rows.length === 0) {
+          return NextResponse.json({ error: 'Invalid email or password' }, { status: 401, headers: corsHeaders() });
+        }
+        const user = result.rows[0];
+        if (user.status === 'suspended') {
+          return NextResponse.json({ error: 'Your account has been suspended. Contact admin.' }, { status: 403, headers: corsHeaders() });
+        }
+        const valid = await bcrypt.compare(body.password, user.password_hash);
+        if (!valid) {
+          return NextResponse.json({ error: 'Invalid email or password' }, { status: 401, headers: corsHeaders() });
+        }
+        // Update last login
+        await query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [user.id]);
+        const token = signToken(user);
+        return NextResponse.json({
+          token,
+          user: { id: user.id, email: user.email, name: user.name, role: user.role, status: user.status }
+        }, { headers: corsHeaders() });
+      } catch (loginErr) {
+        console.error('Login error:', loginErr);
+        return NextResponse.json({ error: 'Login failed: ' + loginErr.message }, { status: 500, headers: corsHeaders() });
+      }
+    }
+
+    // ── Auth: Register (admin creates users, or first-time self-register) ──
+    if (pathStr === 'auth/register') {
+      const emailNorm = normalizeEmail(body.email);
+      if (!emailNorm || !body.password || !body.name) {
+        return NextResponse.json({ error: 'Email, password, and name are required' }, { status: 400, headers: corsHeaders() });
+      }
+      if (body.password.length < 6) {
+        return NextResponse.json({ error: 'Password must be at least 6 characters' }, { status: 400, headers: corsHeaders() });
+      }
+      // Check if email already exists
+      const existing = await query('SELECT id FROM users WHERE email_normalized = $1', [emailNorm]);
+      if (existing.rows.length > 0) {
+        return NextResponse.json({ error: 'An account with this email already exists' }, { status: 409, headers: corsHeaders() });
+      }
+      const hash = await bcrypt.hash(body.password, 10);
+      const role = body.role || 'user';
+      // Only admins can create admin users
+      if (role === 'admin') {
+        const auth = await requireAdmin(request);
+        if (auth.error) {
+          return NextResponse.json({ error: 'Only admins can create admin users' }, { status: 403, headers: corsHeaders() });
+        }
+      }
+      const result = await query(
+        `INSERT INTO users (email, email_normalized, password_hash, name, role, status)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, email, name, role, status, created_at`,
+        [body.email, emailNorm, hash, body.name, role, 'active']
+      );
+      const user = result.rows[0];
+      const token = signToken(user);
+      return NextResponse.json({
+        token,
+        user: { id: user.id, email: user.email, name: user.name, role: user.role, status: user.status }
+      }, { status: 201, headers: corsHeaders() });
+    }
+
+    // ── Admin: Create user ──
+    if (pathStr === 'users') {
+      const auth = await requireAdmin(request);
+      if (auth.error) {
+        return NextResponse.json({ error: auth.error }, { status: auth.status, headers: corsHeaders() });
+      }
+      const emailNorm = normalizeEmail(body.email);
+      if (!emailNorm || !body.password || !body.name) {
+        return NextResponse.json({ error: 'Email, password, and name are required' }, { status: 400, headers: corsHeaders() });
+      }
+      const existing = await query('SELECT id FROM users WHERE email_normalized = $1', [emailNorm]);
+      if (existing.rows.length > 0) {
+        return NextResponse.json({ error: 'An account with this email already exists' }, { status: 409, headers: corsHeaders() });
+      }
+      const hash = await bcrypt.hash(body.password, 10);
+      const result = await query(
+        `INSERT INTO users (email, email_normalized, password_hash, name, role, status)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, email, name, role, status, created_at`,
+        [body.email, emailNorm, hash, body.name, body.role || 'user', 'active']
+      );
+      return NextResponse.json(result.rows[0], { status: 201, headers: corsHeaders() });
+    }
+
     // ── Create lead (UPSERT on email_normalized) ──
     if (pathStr === 'leads') {
+      const currentUser = await getUserFromRequest(request);
       const emailNorm = normalizeEmail(body.email);
       if (!emailNorm) {
         return NextResponse.json({ error: 'Email is required' }, { status: 400, headers: corsHeaders() });
       }
 
       const result = await query(
-        `INSERT INTO leads (email, email_normalized, first_name, last_name, company, domain, phone, linkedin_url, source, status, tags)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        `INSERT INTO leads (email, email_normalized, first_name, last_name, company, domain, phone, linkedin_url, source, status, tags, extracted_by, extracted_by_name)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          ON CONFLICT (email_normalized) DO UPDATE SET
            first_name = COALESCE(NULLIF(EXCLUDED.first_name, ''), leads.first_name),
            last_name = COALESCE(NULLIF(EXCLUDED.last_name, ''), leads.last_name),
@@ -510,7 +795,8 @@ export async function POST(request, { params }) {
            updated_at = NOW()
          RETURNING ${LEAD_COLUMNS}`,
         [body.email, emailNorm, body.firstName || '', body.lastName || '', body.company || '', body.domain || '',
-         body.phone || '', body.linkedinUrl || '', body.source || '', body.status || 'active', body.tags || []]
+         body.phone || '', body.linkedinUrl || '', body.source || '', body.status || 'active', body.tags || [],
+         currentUser?.id || null, currentUser?.name || null]
       );
 
       const lead = result.rows[0];
@@ -540,9 +826,14 @@ export async function POST(request, { params }) {
       }
 
       await query(
-        `INSERT INTO activities (action, lead_id, lead_email, "user") VALUES ($1, $2, $3, $4)`,
-        ['Lead Created', lead.id, body.email, 'System']
+        `INSERT INTO activities (action, lead_id, lead_email, "user", user_id, user_name) VALUES ($1, $2, $3, $4, $5, $6)`,
+        ['Lead Created', lead.id, body.email, currentUser?.name || 'System', currentUser?.id || null, currentUser?.name || null]
       );
+
+      // Increment extraction count for the user
+      if (currentUser?.id) {
+        await query('UPDATE users SET extraction_count = extraction_count + 1 WHERE id = $1', [currentUser.id]);
+      }
 
       const enriched = await enrichLeadWithRelations(lead);
       return NextResponse.json(enriched, { status: 201, headers: corsHeaders() });
@@ -552,13 +843,15 @@ export async function POST(request, { params }) {
     if (pathStr === 'leads/bulk') {
       const leads = body.leads || [];
       const fileName = body.fileName || 'bulk-import';
+      const campaignId = body.campaignId || null;  // NEW: Optional campaign for enrichment
+      const enrichmentSource = body.enrichmentSource || 'csv_import';  // NEW: Track source
       const BATCH_SIZE = 50; // rows per multi-row INSERT
       let insertedCount = 0;
       let updatedCount = 0;
       let duplicateCount = 0;
       let errorCount = 0;
 
-      console.log(`Bulk import started: ${leads.length} leads from ${fileName}`);
+      console.log(`Bulk import started: ${leads.length} leads from ${fileName}${campaignId ? ` (campaign: ${campaignId})` : ''}`);
 
       // Deduplicate entire batch by email
       const seenEmails = new Map();
@@ -573,6 +866,8 @@ export async function POST(request, { params }) {
 
       // Collect all custom fields to insert after main upsert
       const customFieldsQueue = [];
+      // Collect lead IDs for campaign assignment
+      const leadIdsForCampaign = [];
 
       // Process in batches using multi-row INSERT for speed
       const client = await getClient();
@@ -619,12 +914,17 @@ export async function POST(request, { params }) {
               if (row.is_insert) insertedCount++;
               else updatedCount++;
 
-              // Queue custom fields
+              // Track lead IDs for campaign assignment
+              if (campaignId) {
+                leadIdsForCampaign.push(row.id);
+              }
+
+              // Queue custom fields (with campaign_id if provided)
               const lead = batch[idx];
               if (lead.customFields && typeof lead.customFields === 'object') {
                 for (const [key, value] of Object.entries(lead.customFields)) {
                   if (key && value !== undefined && value !== '') {
-                    customFieldsQueue.push({ leadId: row.id, key, value: String(value) });
+                    customFieldsQueue.push({ leadId: row.id, key, value: String(value), campaignId });
                   }
                 }
               }
@@ -635,20 +935,23 @@ export async function POST(request, { params }) {
           }
         }
 
-        // Bulk insert custom fields (50 at a time)
+        // Bulk insert custom fields (50 at a time) - now with campaign_id support
         for (let i = 0; i < customFieldsQueue.length; i += 50) {
           const cfBatch = customFieldsQueue.slice(i, i + 50);
           const cfValues = [];
           const cfPlaceholders = [];
           let cpi = 1;
           for (const cf of cfBatch) {
-            cfPlaceholders.push(`($${cpi}, $${cpi+1}, $${cpi+2})`);
-            cfValues.push(cf.leadId, cf.key, cf.value);
-            cpi += 3;
+            cfPlaceholders.push(`($${cpi}, $${cpi+1}, $${cpi+2}, $${cpi+3})`);
+            cfValues.push(cf.leadId, cf.key, cf.value, cf.campaignId);
+            cpi += 4;
           }
           try {
             await client.query(
-              `INSERT INTO lead_custom_fields (lead_id, field_name, field_value) VALUES ${cfPlaceholders.join(', ')} ON CONFLICT DO NOTHING`,
+              `INSERT INTO lead_custom_fields (lead_id, field_name, field_value, campaign_id)
+               VALUES ${cfPlaceholders.join(', ')}
+               ON CONFLICT (lead_id, field_name, COALESCE(campaign_id, '00000000-0000-0000-0000-000000000000'))
+               DO UPDATE SET field_value = EXCLUDED.field_value`,
               cfValues
             );
           } catch (cfErr) {
@@ -656,8 +959,41 @@ export async function POST(request, { params }) {
           }
         }
 
+        // If campaignId provided, assign leads to campaign with enrichment status
+        if (campaignId && leadIdsForCampaign.length > 0) {
+          // Determine enrichment status based on whether custom fields exist
+          const hasEnrichment = customFieldsQueue.length > 0;
+          const enrichmentStatus = hasEnrichment ? 'enriched' : 'pending';
+
+          // Batch insert campaign_leads with enrichment tracking
+          for (let i = 0; i < leadIdsForCampaign.length; i += 50) {
+            const clBatch = leadIdsForCampaign.slice(i, i + 50);
+            const clValues = [];
+            const clPlaceholders = [];
+            let cli = 1;
+            for (const leadId of clBatch) {
+              clPlaceholders.push(`($${cli}, $${cli+1}, $${cli+2}, $${cli+3}, $${cli+4})`);
+              clValues.push(campaignId, leadId, enrichmentStatus, hasEnrichment ? new Date().toISOString() : null, enrichmentSource);
+              cli += 5;
+            }
+            try {
+              await client.query(
+                `INSERT INTO campaign_leads (campaign_id, lead_id, enrichment_status, enriched_at, enrichment_source)
+                 VALUES ${clPlaceholders.join(', ')}
+                 ON CONFLICT (campaign_id, lead_id) DO UPDATE SET
+                   enrichment_status = EXCLUDED.enrichment_status,
+                   enriched_at = EXCLUDED.enriched_at,
+                   enrichment_source = EXCLUDED.enrichment_source`,
+                clValues
+              );
+            } catch (clErr) {
+              console.warn('Campaign leads batch error:', clErr.message);
+            }
+          }
+        }
+
         await client.query('COMMIT');
-        console.log(`Bulk import committed: ${insertedCount} inserted, ${updatedCount} updated`);
+        console.log(`Bulk import committed: ${insertedCount} inserted, ${updatedCount} updated${campaignId ? `, assigned to campaign ${campaignId}` : ''}`);
       } catch (txErr) {
         await client.query('ROLLBACK');
         errorCount += uniqueLeads.length - insertedCount - updatedCount;
@@ -674,8 +1010,8 @@ export async function POST(request, { params }) {
       );
 
       await query(
-        `INSERT INTO activities (action, details, "user") VALUES ($1, $2, $3)`,
-        ['Bulk Import', `Imported ${insertedCount} new, updated ${updatedCount}, duplicates ${duplicateCount}, errors ${errorCount} from ${leads.length} rows`, 'System']
+        `INSERT INTO activities (action, details, campaign_id, "user") VALUES ($1, $2, $3, $4)`,
+        ['Bulk Import', `Imported ${insertedCount} new, updated ${updatedCount}, duplicates ${duplicateCount}, errors ${errorCount} from ${leads.length} rows${campaignId ? ' (with enrichment)' : ''}`, campaignId, 'System']
       );
 
       return NextResponse.json({
@@ -683,7 +1019,8 @@ export async function POST(request, { params }) {
         updated: updatedCount,
         skipped: duplicateCount,
         errors: errorCount,
-        total: leads.length
+        total: leads.length,
+        campaignId: campaignId || null
       }, { status: 201, headers: corsHeaders() });
     }
 
@@ -747,6 +1084,176 @@ export async function POST(request, { params }) {
       return NextResponse.json(transformCampaign(result.rows[0]), { status: 201, headers: corsHeaders() });
     }
 
+    // ── Bulk enrich existing leads in a campaign ──
+    if (pathStr.match(/^campaigns\/[^/]+\/enrich$/)) {
+      const campaignId = pathStr.split('/')[1];
+      const leads = body.leads || [];
+      const source = body.source || 'csv_import';
+
+      if (!leads.length) {
+        return NextResponse.json({ error: 'No leads provided' }, { status: 400, headers: corsHeaders() });
+      }
+
+      let enrichedCount = 0;
+      let notFoundCount = 0;
+      let errorCount = 0;
+
+      const client = await getClient();
+      try {
+        await client.query('BEGIN');
+
+        for (const lead of leads) {
+          const emailNorm = normalizeEmail(lead.email);
+          if (!emailNorm) { errorCount++; continue; }
+
+          // Find lead by email and verify it's in this campaign
+          const leadRes = await client.query(
+            `SELECT l.id FROM leads l
+             JOIN campaign_leads cl ON cl.lead_id = l.id
+             WHERE l.email_normalized = $1 AND cl.campaign_id = $2`,
+            [emailNorm, campaignId]
+          );
+
+          if (leadRes.rows.length === 0) {
+            notFoundCount++;
+            continue;
+          }
+
+          const leadId = leadRes.rows[0].id;
+
+          // Insert/update custom fields with campaign_id
+          if (lead.customFields && typeof lead.customFields === 'object') {
+            for (const [key, value] of Object.entries(lead.customFields)) {
+              if (key && value !== undefined && value !== '') {
+                await client.query(
+                  `INSERT INTO lead_custom_fields (lead_id, field_name, field_value, campaign_id)
+                   VALUES ($1, $2, $3, $4)
+                   ON CONFLICT (lead_id, field_name, COALESCE(campaign_id, '00000000-0000-0000-0000-000000000000'))
+                   DO UPDATE SET field_value = EXCLUDED.field_value`,
+                  [leadId, key, String(value), campaignId]
+                );
+              }
+            }
+          }
+
+          // Update enrichment status
+          await client.query(
+            `UPDATE campaign_leads SET enrichment_status = 'enriched', enriched_at = NOW(), enrichment_source = $1
+             WHERE campaign_id = $2 AND lead_id = $3`,
+            [source, campaignId, leadId]
+          );
+
+          enrichedCount++;
+        }
+
+        await client.query('COMMIT');
+      } catch (txErr) {
+        await client.query('ROLLBACK');
+        console.error('Enrich transaction error:', txErr.message);
+        return NextResponse.json({ error: txErr.message }, { status: 500, headers: corsHeaders() });
+      } finally {
+        client.release();
+      }
+
+      await query(
+        `INSERT INTO activities (action, campaign_id, details, "user") VALUES ($1, $2, $3, $4)`,
+        ['Campaign Enrichment', campaignId, `Enriched ${enrichedCount} leads, ${notFoundCount} not found, ${errorCount} errors`, 'System']
+      );
+
+      return NextResponse.json({
+        enriched: enrichedCount,
+        notFound: notFoundCount,
+        errors: errorCount,
+        total: leads.length
+      }, { status: 200, headers: corsHeaders() });
+    }
+
+    // ── Single lead enrichment (for external API integration) ──
+    if (pathStr.match(/^leads\/[^/]+\/enrich$/)) {
+      const leadId = pathStr.split('/')[1];
+      const campaignId = body.campaignId;
+      const source = body.source || 'api';
+      const data = body.data || {};
+
+      if (!campaignId) {
+        return NextResponse.json({ error: 'campaignId is required' }, { status: 400, headers: corsHeaders() });
+      }
+
+      // Verify lead exists
+      const leadRes = await query('SELECT id FROM leads WHERE id = $1', [leadId]);
+      if (leadRes.rows.length === 0) {
+        return NextResponse.json({ error: 'Lead not found' }, { status: 404, headers: corsHeaders() });
+      }
+
+      // Ensure lead is in campaign (create junction if not)
+      await query(
+        `INSERT INTO campaign_leads (campaign_id, lead_id, enrichment_status, enriched_at, enrichment_source)
+         VALUES ($1, $2, 'enriched', NOW(), $3)
+         ON CONFLICT (campaign_id, lead_id) DO UPDATE SET
+           enrichment_status = 'enriched',
+           enriched_at = NOW(),
+           enrichment_source = EXCLUDED.enrichment_source`,
+        [campaignId, leadId, source]
+      );
+
+      // Insert/update custom fields
+      for (const [key, value] of Object.entries(data)) {
+        if (key && value !== undefined && value !== '') {
+          await query(
+            `INSERT INTO lead_custom_fields (lead_id, field_name, field_value, campaign_id)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (lead_id, field_name, COALESCE(campaign_id, '00000000-0000-0000-0000-000000000000'))
+             DO UPDATE SET field_value = EXCLUDED.field_value`,
+            [leadId, key, String(value), campaignId]
+          );
+        }
+      }
+
+      await query(
+        `INSERT INTO activities (action, lead_id, campaign_id, details, "user") VALUES ($1, $2, $3, $4, $5)`,
+        ['Lead Enriched', leadId, campaignId, `Enriched via ${source} with ${Object.keys(data).length} fields`, 'System']
+      );
+
+      return NextResponse.json({ success: true, fieldsAdded: Object.keys(data).length }, { headers: corsHeaders() });
+    }
+
+    // ── Define campaign field templates for export ──
+    if (pathStr.match(/^campaigns\/[^/]+\/fields$/)) {
+      const campaignId = pathStr.split('/')[1];
+      const fields = body.fields || [];
+
+      if (!Array.isArray(fields)) {
+        return NextResponse.json({ error: 'fields must be an array' }, { status: 400, headers: corsHeaders() });
+      }
+
+      // Verify campaign exists
+      const campaignRes = await query('SELECT id FROM campaigns WHERE id = $1', [campaignId]);
+      if (campaignRes.rows.length === 0) {
+        return NextResponse.json({ error: 'Campaign not found' }, { status: 404, headers: corsHeaders() });
+      }
+
+      // Clear existing templates and insert new ones
+      await query('DELETE FROM campaign_field_templates WHERE campaign_id = $1', [campaignId]);
+
+      for (let i = 0; i < fields.length; i++) {
+        const field = typeof fields[i] === 'string' ? { name: fields[i] } : fields[i];
+        await query(
+          `INSERT INTO campaign_field_templates (campaign_id, field_name, field_order, is_required)
+           VALUES ($1, $2, $3, $4)`,
+          [campaignId, field.name, i, field.required || false]
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        fields: fields.map((f, i) => ({
+          name: typeof f === 'string' ? f : f.name,
+          order: i,
+          required: typeof f === 'object' ? (f.required || false) : false
+        }))
+      }, { status: 201, headers: corsHeaders() });
+    }
+
     // ── Create list ──
     if (pathStr === 'lists') {
       const result = await query(
@@ -775,6 +1282,48 @@ export async function PUT(request, { params }) {
 
   try {
     const body = await request.json();
+
+    // ── Admin: Update user (suspend, change role, etc.) ──
+    if (pathStr.startsWith('users/') && pathStr.split('/').length === 2) {
+      const auth = await requireAdmin(request);
+      if (auth.error) {
+        return NextResponse.json({ error: auth.error }, { status: auth.status, headers: corsHeaders() });
+      }
+      const userId = pathStr.split('/')[1];
+      const updates = [];
+      const values = [];
+      let pi = 1;
+
+      if (body.name !== undefined) { updates.push(`name = $${pi++}`); values.push(body.name); }
+      if (body.role !== undefined) { updates.push(`role = $${pi++}`); values.push(body.role); }
+      if (body.status !== undefined) { updates.push(`status = $${pi++}`); values.push(body.status); }
+      if (body.password) {
+        const hash = await bcrypt.hash(body.password, 10);
+        updates.push(`password_hash = $${pi++}`);
+        values.push(hash);
+      }
+
+      if (updates.length === 0) {
+        return NextResponse.json({ error: 'No fields to update' }, { status: 400, headers: corsHeaders() });
+      }
+
+      updates.push('updated_at = NOW()');
+      values.push(userId);
+
+      const result = await query(
+        `UPDATE users SET ${updates.join(', ')} WHERE id = $${pi} RETURNING id, email, name, role, status, extraction_count, last_login_at, created_at, updated_at`,
+        values
+      );
+      if (result.rows.length === 0) {
+        return NextResponse.json({ error: 'User not found' }, { status: 404, headers: corsHeaders() });
+      }
+      const u = result.rows[0];
+      return NextResponse.json({
+        id: u.id, email: u.email, name: u.name, role: u.role, status: u.status,
+        extractionCount: u.extraction_count || 0, lastLoginAt: u.last_login_at,
+        createdAt: u.created_at, updatedAt: u.updated_at
+      }, { headers: corsHeaders() });
+    }
 
     // ── Update lead ──
     if (pathStr.startsWith('leads/') && pathStr.split('/').length === 2) {
