@@ -877,62 +877,135 @@ export async function POST(request, { params }) {
         for (let i = 0; i < uniqueLeads.length; i += BATCH_SIZE) {
           const batch = uniqueLeads.slice(i, i + BATCH_SIZE);
 
-          // Build multi-row VALUES clause
-          const values = [];
-          const placeholders = [];
-          let pi = 1;
+          // First, check which leads already exist and compare key fields
+          const emailNorms = batch.map(l => l.emailNorm);
+          const existingRes = await client.query(
+            `SELECT email_normalized, first_name, last_name, company, phone FROM leads WHERE email_normalized = ANY($1)`,
+            [emailNorms]
+          );
+          const existingMap = new Map();
+          existingRes.rows.forEach(row => {
+            existingMap.set(row.email_normalized, row);
+          });
 
-          for (const lead of batch) {
-            placeholders.push(`($${pi}, $${pi+1}, $${pi+2}, $${pi+3}, $${pi+4}, $${pi+5}, $${pi+6}, $${pi+7}, $${pi+8}, $${pi+9}, $${pi+10})`);
-            values.push(
-              lead.email, lead.emailNorm, lead.firstName || '', lead.lastName || '',
-              lead.company || '', lead.domain || '', lead.phone || '',
-              lead.linkedinUrl || '', lead.source || '', lead.status || 'active',
-              lead.tags || []
-            );
-            pi += 11;
-          }
+          // Separate into: new leads, leads to update, exact duplicates to skip
+          const leadsToInsert = [];
+          const leadsToUpdate = [];
+          const skippedIndices = new Set();
 
-          try {
-            const res = await client.query(
-              `INSERT INTO leads (email, email_normalized, first_name, last_name, company, domain, phone, linkedin_url, source, status, tags)
-               VALUES ${placeholders.join(', ')}
-               ON CONFLICT (email_normalized) DO UPDATE SET
-                 first_name = COALESCE(NULLIF(EXCLUDED.first_name, ''), leads.first_name),
-                 last_name = COALESCE(NULLIF(EXCLUDED.last_name, ''), leads.last_name),
-                 company = COALESCE(NULLIF(EXCLUDED.company, ''), leads.company),
-                 domain = COALESCE(NULLIF(EXCLUDED.domain, ''), leads.domain),
-                 phone = COALESCE(NULLIF(EXCLUDED.phone, ''), leads.phone),
-                 linkedin_url = COALESCE(NULLIF(EXCLUDED.linkedin_url, ''), leads.linkedin_url),
-                 source = COALESCE(NULLIF(EXCLUDED.source, ''), leads.source),
-                 updated_at = NOW()
-               RETURNING id, (xmax = 0) as is_insert`,
-              values
-            );
-
-            res.rows.forEach((row, idx) => {
-              if (row.is_insert) insertedCount++;
-              else { updatedCount++; duplicateCount++; }
-
-              // Track lead IDs for campaign assignment
-              if (campaignId) {
-                leadIdsForCampaign.push(row.id);
+          batch.forEach((lead, idx) => {
+            const existing = existingMap.get(lead.emailNorm);
+            if (!existing) {
+              leadsToInsert.push({ lead, idx });
+            } else {
+              // Compare key fields: first_name, last_name, company, phone
+              const isSame = 
+                (lead.firstName || '') === (existing.first_name || '') &&
+                (lead.lastName || '') === (existing.last_name || '') &&
+                (lead.company || '') === (existing.company || '') &&
+                (lead.phone || '') === (existing.phone || '');
+              
+              if (isSame) {
+                // Exact duplicate - skip entirely
+                duplicateCount++;
+                skippedIndices.add(idx);
+              } else {
+                // Different data - update
+                leadsToUpdate.push({ lead, idx });
               }
+            }
+          });
 
-              // Queue custom fields (with campaign_id if provided)
-              const lead = batch[idx];
-              if (lead.customFields && typeof lead.customFields === 'object') {
-                for (const [key, value] of Object.entries(lead.customFields)) {
-                  if (key && value !== undefined && value !== '') {
-                    customFieldsQueue.push({ leadId: row.id, key, value: String(value), campaignId });
+          // Insert new leads
+          if (leadsToInsert.length > 0) {
+            const values = [];
+            const placeholders = [];
+            let pi = 1;
+            for (const { lead } of leadsToInsert) {
+              placeholders.push(`($${pi}, $${pi+1}, $${pi+2}, $${pi+3}, $${pi+4}, $${pi+5}, $${pi+6}, $${pi+7}, $${pi+8}, $${pi+9}, $${pi+10})`);
+              values.push(
+                lead.email, lead.emailNorm, lead.firstName || '', lead.lastName || '',
+                lead.company || '', lead.domain || '', lead.phone || '',
+                lead.linkedinUrl || '', lead.source || '', lead.status || 'active',
+                lead.tags || []
+              );
+              pi += 11;
+            }
+            try {
+              const res = await client.query(
+                `INSERT INTO leads (email, email_normalized, first_name, last_name, company, domain, phone, linkedin_url, source, status, tags)
+                 VALUES ${placeholders.join(', ')}
+                 RETURNING id`,
+                values
+              );
+              res.rows.forEach((row, i) => {
+                insertedCount++;
+                if (campaignId) leadIdsForCampaign.push(row.id);
+                const lead = leadsToInsert[i].lead;
+                if (lead.customFields && typeof lead.customFields === 'object') {
+                  for (const [key, value] of Object.entries(lead.customFields)) {
+                    if (key && value !== undefined && value !== '') {
+                      customFieldsQueue.push({ leadId: row.id, key, value: String(value), campaignId });
+                    }
                   }
                 }
-              }
-            });
-          } catch (batchErr) {
-            errorCount += batch.length;
-            console.warn('Batch insert error:', batchErr.message);
+              });
+            } catch (insertErr) {
+              errorCount += leadsToInsert.length;
+              console.warn('Batch insert error:', insertErr.message);
+            }
           }
+
+          // Update leads with different data
+          if (leadsToUpdate.length > 0) {
+            const values = [];
+            const placeholders = [];
+            let pi = 1;
+            for (const { lead } of leadsToUpdate) {
+              placeholders.push(`($${pi}, $${pi+1}, $${pi+2}, $${pi+3}, $${pi+4}, $${pi+5}, $${pi+6}, $${pi+7}, $${pi+8}, $${pi+9}, $${pi+10})`);
+              values.push(
+                lead.email, lead.emailNorm, lead.firstName || '', lead.lastName || '',
+                lead.company || '', lead.domain || '', lead.phone || '',
+                lead.linkedinUrl || '', lead.source || '', lead.status || 'active',
+                lead.tags || []
+              );
+              pi += 11;
+            }
+            try {
+              const res = await client.query(
+                `INSERT INTO leads (email, email_normalized, first_name, last_name, company, domain, phone, linkedin_url, source, status, tags)
+                 VALUES ${placeholders.join(', ')}
+                 ON CONFLICT (email_normalized) DO UPDATE SET
+                   first_name = COALESCE(NULLIF(EXCLUDED.first_name, ''), leads.first_name),
+                   last_name = COALESCE(NULLIF(EXCLUDED.last_name, ''), leads.last_name),
+                   company = COALESCE(NULLIF(EXCLUDED.company, ''), leads.company),
+                   domain = COALESCE(NULLIF(EXCLUDED.domain, ''), leads.domain),
+                   phone = COALESCE(NULLIF(EXCLUDED.phone, ''), leads.phone),
+                   linkedin_url = COALESCE(NULLIF(EXCLUDED.linkedin_url, ''), leads.linkedin_url),
+                   source = COALESCE(NULLIF(EXCLUDED.source, ''), leads.source),
+                   updated_at = NOW()
+                 RETURNING id`,
+                values
+              );
+              res.rows.forEach((row, i) => {
+                updatedCount++;
+                if (campaignId) leadIdsForCampaign.push(row.id);
+                const lead = leadsToUpdate[i].lead;
+                if (lead.customFields && typeof lead.customFields === 'object') {
+                  for (const [key, value] of Object.entries(lead.customFields)) {
+                    if (key && value !== undefined && value !== '') {
+                      customFieldsQueue.push({ leadId: row.id, key, value: String(value), campaignId });
+                    }
+                  }
+                }
+              });
+            } catch (updateErr) {
+              errorCount += leadsToUpdate.length;
+              console.warn('Batch update error:', updateErr.message);
+            }
+          }
+
+          // Note: skipped duplicates don't need any DB operation - already counted above
         }
 
         // Bulk insert custom fields (50 at a time) - now with campaign_id support
