@@ -250,76 +250,51 @@ function LoginScreen({ screen, setScreen, onLogin, onRegister }) {
   }
 
   return (
-    <div className="flex h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
-      {/* Left side - hero section */}
-      <div className="hidden lg:flex lg:w-1/2 items-center justify-center p-12 relative overflow-hidden">
-        {/* Animated background elements */}
-        <div className="absolute inset-0 overflow-hidden">
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-gradient-to-r from-blue-500/20 to-purple-500/20 rounded-full blur-3xl animate-pulse" />
-          <div className="absolute top-1/4 right-1/4 w-64 h-64 bg-gradient-to-r from-cyan-500/10 to-blue-500/10 rounded-full blur-2xl animate-pulse delay-1000" />
-        </div>
-        
-        <div className="max-w-md relative z-10">
-          <div className="flex items-center gap-3 mb-12">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg shadow-blue-500/50">
-              <Target className="w-8 h-8 text-white" />
+    <div className="flex h-screen bg-background">
+      {/* Left side - branding */}
+      <div className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-primary/10 via-background to-primary/5 items-center justify-center p-12">
+        <div className="max-w-md">
+          <div className="flex items-center gap-3 mb-8">
+            <div className="w-12 h-12 rounded-xl bg-primary flex items-center justify-center">
+              <Target className="w-7 h-7 text-primary-foreground" />
             </div>
-            <span className="text-4xl font-bold text-white">LeadOS</span>
+            <span className="text-3xl font-bold">LeadOS</span>
           </div>
-          
-          <h1 className="text-5xl font-bold text-white mb-6 leading-tight">
-            Mastering Lead Management for Growth
-          </h1>
-          
-          <p className="text-slate-300 text-xl leading-relaxed mb-8">
-            The perfect solution to scale your outreach with a centralized lead intelligence platform built for high-volume operators.
+          <h2 className="text-2xl font-semibold mb-4">Lead Intelligence Dashboard</h2>
+          <p className="text-muted-foreground text-lg leading-relaxed">
+            Centralized lead database for high-volume cold email operators. Import, enrich, and manage leads at scale.
           </p>
-          
-          <div className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-orange-500 to-red-500 text-white font-semibold rounded-lg hover:shadow-lg hover:shadow-orange-500/50 transition-all cursor-pointer">
-            <span>Discover More</span>
-            <ChevronRight className="w-5 h-5" />
-          </div>
-          
-          <div className="mt-12 pt-8 border-t border-slate-700">
-            <h3 className="text-white font-semibold mb-4 text-lg">Enterprise-Grade Features</h3>
-            <div className="space-y-3">
-              <div className="flex items-center gap-3 text-slate-300">
-                <div className="w-6 h-6 rounded-full bg-blue-500/20 flex items-center justify-center flex-shrink-0">
-                  <CheckCircle2 className="w-4 h-4 text-blue-400" />
-                </div>
-                <span>Import 500K+ leads via CSV with smart deduplication</span>
-              </div>
-              <div className="flex items-center gap-3 text-slate-300">
-                <div className="w-6 h-6 rounded-full bg-blue-500/20 flex items-center justify-center flex-shrink-0">
-                  <CheckCircle2 className="w-4 h-4 text-blue-400" />
-                </div>
-                <span>Campaign-based enrichment and tracking</span>
-              </div>
-              <div className="flex items-center gap-3 text-slate-300">
-                <div className="w-6 h-6 rounded-full bg-blue-500/20 flex items-center justify-center flex-shrink-0">
-                  <CheckCircle2 className="w-4 h-4 text-blue-400" />
-                </div>
-                <span>Team management with role-based access control</span>
-              </div>
+          <div className="mt-8 space-y-3">
+            <div className="flex items-center gap-3 text-muted-foreground">
+              <CheckCircle2 className="w-5 h-5 text-primary" />
+              <span>Import 500K+ leads via CSV</span>
+            </div>
+            <div className="flex items-center gap-3 text-muted-foreground">
+              <CheckCircle2 className="w-5 h-5 text-primary" />
+              <span>Campaign-based enrichment tracking</span>
+            </div>
+            <div className="flex items-center gap-3 text-muted-foreground">
+              <CheckCircle2 className="w-5 h-5 text-primary" />
+              <span>Team management with role-based access</span>
             </div>
           </div>
         </div>
       </div>
 
       {/* Right side - form */}
-      <div className="flex-1 flex items-center justify-center p-8 bg-white">
+      <div className="flex-1 flex items-center justify-center p-8">
         <div className="w-full max-w-sm">
           <div className="flex items-center gap-3 mb-8 lg:hidden">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg">
-              <Target className="w-6 h-6 text-white" />
+            <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center">
+              <Target className="w-6 h-6 text-primary-foreground" />
             </div>
-            <span className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">LeadOS</span>
+            <span className="text-2xl font-bold">LeadOS</span>
           </div>
 
-          <h1 className="text-3xl font-bold mb-2 text-slate-900">
+          <h1 className="text-2xl font-semibold mb-2">
             {screen === 'login' ? 'Welcome back' : 'Create account'}
           </h1>
-          <p className="text-slate-600 mb-8">
+          <p className="text-muted-foreground mb-6">
             {screen === 'login' ? 'Sign in to your account to continue' : 'Register a new account to get started'}
           </p>
 
