@@ -912,7 +912,7 @@ export async function POST(request, { params }) {
 
             res.rows.forEach((row, idx) => {
               if (row.is_insert) insertedCount++;
-              else updatedCount++;
+              else { updatedCount++; duplicateCount++; }
 
               // Track lead IDs for campaign assignment
               if (campaignId) {

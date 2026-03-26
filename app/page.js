@@ -366,13 +366,6 @@ function LoginScreen({ screen, setScreen, onLogin, onRegister }) {
             )}
           </div>
 
-          {screen === 'login' && (
-            <div className="mt-4 p-3 rounded-xl bg-muted text-xs text-muted-foreground">
-              <p className="font-medium mb-1">Default admin credentials:</p>
-              <p>Email: admin@leados.com</p>
-              <p>Password: admin123</p>
-            </div>
-          )}
         </div>
       </div>
     </div>
